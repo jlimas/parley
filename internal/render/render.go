@@ -24,7 +24,9 @@ const DetailChars = 500
 const HomeUnreadLimit = 5
 
 // DefaultListFields is the column set for `parley list` and the home view.
-var DefaultListFields = []string{"id", "type", "from", "content", "age"}
+// `title` falls back to a content preview for replies (which have no title)
+// and for legacy posts saved before the field existed.
+var DefaultListFields = []string{"id", "type", "from", "title", "age"}
 
 // HumanAge returns a short relative-time string like "12s", "5m", "2h", "3d".
 // Returns "now" for sub-second deltas and "—" for the zero time.
@@ -173,10 +175,11 @@ func PostsList(w io.Writer, name string, posts []protocol.Post, fields []string,
 // where each event becomes one bounded burst on stdout (Monitor-friendly).
 func Event(w io.Writer, e protocol.Event, now time.Time) {
 	out := toon.New(w)
-	preview, _ := Preview(e.Post.Content, PreviewChars)
-	out.Table("event", DefaultListFields, [][]any{
-		{e.Post.ID, e.Type, e.Post.Author, preview, HumanAge(e.Post.Timestamp, now)},
-	})
+	row := make([]any, len(DefaultListFields))
+	for i, f := range DefaultListFields {
+		row[i] = postField(e.Post, f, now)
+	}
+	out.Table("event", DefaultListFields, [][]any{row})
 }
 
 // Detail renders a single post (and its replies, if any) as the detail view.
@@ -192,6 +195,9 @@ func Detail(w io.Writer, p protocol.Post, replies []protocol.Post, full bool, no
 		s.KV("from", p.Author)
 		s.KV("audience", AudienceForDisplay(p.Audience))
 		s.KV("age", HumanAge(p.Timestamp, now))
+		if p.Title != "" {
+			s.KV("title", p.Title)
+		}
 		if full {
 			s.KV("content", p.Content)
 		} else {
@@ -242,6 +248,13 @@ func postField(p protocol.Post, field string, now time.Time) any {
 		return EventType(p)
 	case "from":
 		return p.Author
+	case "title":
+		if p.Title != "" {
+			preview, _ := Preview(p.Title, PreviewChars)
+			return preview
+		}
+		preview, _ := Preview(p.Content, PreviewChars)
+		return preview
 	case "content":
 		preview, _ := Preview(p.Content, PreviewChars)
 		return preview

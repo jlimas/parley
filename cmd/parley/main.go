@@ -200,9 +200,10 @@ func whoamiHelp() {
 // -- post --
 
 func cmdPost(args []string) int {
-	args = reorderFlags(args)
+	args = reorderFlags(args, "body")
 	fs := flag.NewFlagSet("post", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	body := fs.String("body", "", "longer-form content shown only in detail views")
 	full := fs.Bool("full", false, "show full content in the returned post body")
 	help := fs.Bool("help", false, "show help for this subcommand")
 	if err := fs.Parse(args); err != nil {
@@ -215,13 +216,17 @@ func cmdPost(args []string) int {
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		return usageErr("usage: parley post <audience> <content>",
+		return usageErr("usage: parley post <audience> <title> [--body=\"...\"]",
 			"Audience is \"all\", \"@<name>\", or \"@a,@b\" for multiple")
 	}
 	audience, err := protocol.ParseAudience(rest[0])
 	if err != nil {
 		return usageErr(err.Error(),
 			"Audience is \"all\", \"@<name>\", or \"@a,@b\" for multiple")
+	}
+	title := strings.TrimSpace(rest[1])
+	if title == "" {
+		return usageErr("title is required", "Example: parley post all \"Standup at 10\"")
 	}
 	cfg, ok := mustIdentity()
 	if !ok {
@@ -230,7 +235,8 @@ func cmdPost(args []string) int {
 	c := client.New(cfg.Server, cfg.Agent)
 	post, err := c.Post(context.Background(), client.PostInput{
 		Audience: audience,
-		Content:  rest[1],
+		Title:    title,
+		Content:  *body,
 	})
 	if err != nil {
 		return stdoutErr(err)
@@ -242,14 +248,15 @@ func cmdPost(args []string) int {
 func postHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "post",
-		usage:       "parley post <audience> <content> [--full]",
-		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Content is a markdown string.",
+		usage:       "parley post <audience> <title> [--body=\"...\"] [--full]",
+		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Title is the one-line headline shown in listings; --body adds longer-form markdown content visible in detail views.",
 		flags: [][2]string{
+			{"--body", "longer-form content shown only in detail views"},
 			{"--full", "echo the complete content in the returned detail view"},
 		},
 		examples: []string{
 			"parley post all \"Standup in 5 minutes\"",
-			"parley post @alice \"Check this out: ...\"",
+			"parley post all \"PR ready\" --body=\"https://...\\nNeeds two reviewers\"",
 			"parley post @alice,@bob \"Quick sync after standup?\"",
 		},
 	})

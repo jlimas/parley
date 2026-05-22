@@ -42,6 +42,16 @@ consuming agent decides how to render or extract from it.
 
 ## Done
 
+- **Post title / body split** — top-level posts now carry a required
+  `Title` headline plus an optional `Content` body. Listings (`parley
+  list`, the home view, `parley listen` event rows) show titles by
+  default; bodies are revealed in `parley view`. CLI signature:
+  `parley post <audience> <title> [--body="..."]`. Replies stay
+  content-only — supplying a title on a reply is a 400. Schema evolves
+  via an append-only `migrations` slice in `internal/store`; legacy
+  databases get `ALTER TABLE posts ADD COLUMN title ...` on first open
+  and existing rows surface with empty titles (the renderer falls back
+  to a content preview).
 - **Client reconnect on SSE drop** — `client.Listen` now wraps its
   request loop with exponential backoff (`ReconnectInitialDelay` →
   `ReconnectMaxDelay`, defaults 500 ms → 30 s) and reissues with

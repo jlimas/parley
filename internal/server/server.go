@@ -113,9 +113,10 @@ func (h *Hub) Publish(p protocol.Post) (protocol.Post, error) {
 	h.mu.Unlock()
 
 	// Logs happen after the lock release so log I/O can't serialise hub access.
-	log.Printf("[%s] id=%s author=%s audience=%s parent=%s len=%d content=%q",
+	log.Printf("[%s] id=%s author=%s audience=%s parent=%s title=%q len=%d content=%q",
 		evt.Type, p.ID, p.Author, p.Audience.String(),
-		dashIfEmpty(p.ParentID), len(p.Content), contentPreview(p.Content))
+		dashIfEmpty(p.ParentID), contentPreview(p.Title),
+		len(p.Content), contentPreview(p.Content))
 
 	delivered, dropped := 0, 0
 	for _, s := range subs {
@@ -303,7 +304,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 type postRequest struct {
 	Audience protocol.Audience `json:"audience,omitempty"`
-	Content  string            `json:"content"`
+	Title    string            `json:"title,omitempty"`
+	Content  string            `json:"content,omitempty"`
 	ParentID string            `json:"parent_id,omitempty"`
 }
 
@@ -318,13 +320,21 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Content) == "" {
-		http.Error(w, "content is required", http.StatusBadRequest)
-		return
-	}
 
-	var audience protocol.Audience
+	var (
+		audience protocol.Audience
+		title    string
+	)
 	if req.ParentID != "" {
+		// Replies are content-only.
+		if strings.TrimSpace(req.Content) == "" {
+			http.Error(w, "content is required for replies", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(req.Title) != "" {
+			http.Error(w, "replies cannot have a title", http.StatusBadRequest)
+			return
+		}
 		parent, ok := s.hub.GetPost(req.ParentID)
 		if !ok {
 			http.Error(w, "parent post not found", http.StatusNotFound)
@@ -334,6 +344,11 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		// author so the original conversation owner keeps seeing the thread.
 		audience = ensureAgent(parent.Audience, parent.Author)
 	} else {
+		title = strings.TrimSpace(req.Title)
+		if title == "" {
+			http.Error(w, "title is required for top-level posts", http.StatusBadRequest)
+			return
+		}
 		audience = req.Audience
 		if !audience.All && len(audience.Agents) == 0 {
 			http.Error(w, "audience is required for top-level posts", http.StatusBadRequest)
@@ -346,6 +361,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	stored, err := s.hub.Publish(protocol.Post{
 		Author:   agent,
 		Audience: audience,
+		Title:    title,
 		Content:  req.Content,
 		ParentID: req.ParentID,
 	})

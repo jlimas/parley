@@ -45,7 +45,8 @@ func New(baseURL, agent string) *Client {
 
 type PostInput struct {
 	Audience protocol.Audience `json:"audience,omitempty"`
-	Content  string            `json:"content"`
+	Title    string            `json:"title,omitempty"`
+	Content  string            `json:"content,omitempty"`
 	ParentID string            `json:"parent_id,omitempty"`
 }
 

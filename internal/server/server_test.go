@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -290,6 +294,86 @@ func TestSubscribeRepliesGetReplyType(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for reply event")
+	}
+}
+
+func TestHandlePostTitleRules(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       map[string]any
+		wantStatus int
+	}{
+		{
+			name:       "top-level post requires a title",
+			body:       map[string]any{"audience": map[string]any{"all": true}, "content": "body without headline"},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "top-level post with blank title is rejected",
+			body:       map[string]any{"audience": map[string]any{"all": true}, "title": "   ", "content": "body"},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "top-level post with title and empty content is accepted",
+			body:       map[string]any{"audience": map[string]any{"all": true}, "title": "headline only"},
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "top-level post with title and content is accepted",
+			body:       map[string]any{"audience": map[string]any{"all": true}, "title": "headline", "content": "body"},
+			wantStatus: http.StatusCreated,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := New(&mockPersister{}, nil)
+			ts := httptest.NewServer(srv.Handler())
+			defer ts.Close()
+
+			body, _ := json.Marshal(tc.body)
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/posts", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("X-Parley-Agent", "alice")
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				b, _ := io.ReadAll(resp.Body)
+				t.Errorf("status = %d, want %d (body=%q)", resp.StatusCode, tc.wantStatus, b)
+			}
+		})
+	}
+}
+
+func TestHandlePostReplyRejectsTitle(t *testing.T) {
+	t0 := time.Unix(1000, 0).UTC()
+	srv := New(&mockPersister{}, []protocol.Post{
+		{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Title: "topic", Timestamp: t0},
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"parent_id": "p1",
+		"title":     "should not be allowed",
+		"content":   "reply body",
+	})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/posts", bytes.NewReader(body))
+	req.Header.Set("X-Parley-Agent", "bob")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Errorf("status = %d, want 400 (body=%q)", resp.StatusCode, b)
 	}
 }
 

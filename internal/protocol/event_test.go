@@ -1,6 +1,11 @@
 package protocol
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestParseAudience(t *testing.T) {
 	cases := []struct {
@@ -73,6 +78,49 @@ func TestAudienceStringMultiAgent(t *testing.T) {
 	a := Audience{Agents: []string{"alice", "bob"}}
 	if got := a.String(); got != "@alice,@bob" {
 		t.Errorf("multi-agent String = %q want %q", got, "@alice,@bob")
+	}
+}
+
+func TestPostJSONTitleRoundTrip(t *testing.T) {
+	// Title is the new headline field; ensure it survives a marshal/unmarshal
+	// cycle and that omitempty drops it from the wire when empty (so legacy
+	// clients that don't know the field don't see noise).
+	full := Post{
+		ID:        "abc123",
+		Author:    "alice",
+		Audience:  Audience{All: true},
+		Title:     "headline",
+		Content:   "body",
+		Timestamp: time.Date(2026, 5, 22, 16, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"title":"headline"`) {
+		t.Errorf("marshaled JSON missing title: %s", b)
+	}
+	var back Post
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Title != "headline" {
+		t.Errorf("Title round-trip = %q, want %q", back.Title, "headline")
+	}
+
+	reply := Post{
+		ID:       "def456",
+		ParentID: "abc123",
+		Author:   "bob",
+		Audience: Audience{All: true},
+		Content:  "got it",
+	}
+	rb, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatalf("marshal reply: %v", err)
+	}
+	if strings.Contains(string(rb), `"title"`) {
+		t.Errorf("empty title should be omitted from JSON, got %s", rb)
 	}
 }
 

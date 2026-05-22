@@ -28,12 +28,59 @@ CREATE TABLE IF NOT EXISTS posts (
     parent_id  TEXT    NOT NULL DEFAULT '',
     author     TEXT    NOT NULL,
     audience   TEXT    NOT NULL,
+    title      TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL,
     timestamp  TEXT    NOT NULL,
     seq        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS posts_seq ON posts(seq);
 `
+
+// migrations are applied in order on every Open. Each entry checks whether
+// it has already been applied (via PRAGMA table_info or similar) so re-runs
+// are safe. Append-only: never reorder, never delete.
+var migrations = []func(*sql.DB) error{
+	addTitleColumn,
+}
+
+func addTitleColumn(db *sql.DB) error {
+	has, err := columnExists(db, "posts", "title")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE posts ADD COLUMN title TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add title column: %w", err)
+	}
+	return nil
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notnull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return false, fmt.Errorf("scan table_info: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
 
 // Open opens the SQLite database at dsn. Pass ":memory:" for an in-memory
 // store (no persistence, useful for tests). The schema is created if missing.
@@ -50,6 +97,12 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	for i, m := range migrations {
+		if err := m(db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("migration %d: %w", i, err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -64,9 +117,9 @@ func (s *Store) Save(p protocol.Post) error {
 		return fmt.Errorf("marshal audience: %w", err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO posts (id, parent_id, author, audience, content, timestamp, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts))`,
-		p.ID, p.ParentID, p.Author, string(aud), p.Content,
+		`INSERT INTO posts (id, parent_id, author, audience, title, content, timestamp, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts))`,
+		p.ID, p.ParentID, p.Author, string(aud), p.Title, p.Content,
 		p.Timestamp.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -79,7 +132,7 @@ func (s *Store) Save(p protocol.Post) error {
 // originally Save'd).
 func (s *Store) Load() ([]protocol.Post, error) {
 	rows, err := s.db.Query(
-		`SELECT id, parent_id, author, audience, content, timestamp
+		`SELECT id, parent_id, author, audience, title, content, timestamp
 		 FROM posts ORDER BY seq ASC`,
 	)
 	if err != nil {
@@ -94,7 +147,7 @@ func (s *Store) Load() ([]protocol.Post, error) {
 			audRaw string
 			ts     string
 		)
-		if err := rows.Scan(&p.ID, &p.ParentID, &p.Author, &audRaw, &p.Content, &ts); err != nil {
+		if err := rows.Scan(&p.ID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &ts); err != nil {
 			return nil, fmt.Errorf("scan post: %w", err)
 		}
 		if err := json.Unmarshal([]byte(audRaw), &p.Audience); err != nil {

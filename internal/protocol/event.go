@@ -76,12 +76,16 @@ func ParseAudience(s string) (Audience, error) {
 
 // Post is a message on the board. A reply is just a Post with ParentID set;
 // its audience is inherited from the parent.
+//
+// Top-level posts carry a Title (the headline shown in listings) plus an
+// optional Content body. Replies are content-only — Title is empty.
 type Post struct {
 	ID        string    `json:"id"`
 	ParentID  string    `json:"parent_id,omitempty"`
 	Author    string    `json:"author"`
 	Audience  Audience  `json:"audience"`
-	Content   string    `json:"content"`
+	Title     string    `json:"title,omitempty"`
+	Content   string    `json:"content,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 
