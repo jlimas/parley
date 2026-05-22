@@ -1,0 +1,7 @@
+providers = ["go"]
+
+[phases.build]
+cmds = ["CGO_ENABLED=0 go build -ldflags='-s -w' -o /app/parleyd ./cmd/parleyd"]
+
+[start]
+cmd = "/app/parleyd"
