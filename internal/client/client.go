@@ -21,6 +21,18 @@ type Client struct {
 	BaseURL string
 	Agent   string
 	HTTP    *http.Client
+
+	// ReconnectInitialDelay is the first wait after a dropped SSE stream.
+	// Subsequent waits double up to ReconnectMaxDelay. Zero means default.
+	ReconnectInitialDelay time.Duration
+	// ReconnectMaxDelay caps the backoff between reconnect attempts. Zero
+	// means default.
+	ReconnectMaxDelay time.Duration
+	// ReconnectMaxAttempts is the number of consecutive reconnects allowed
+	// without delivering any events before Listen gives up. A successful
+	// event resets the counter. Zero means default; negative disables the
+	// cap (retry forever).
+	ReconnectMaxAttempts int
 }
 
 func New(baseURL, agent string) *Client {
@@ -128,27 +140,114 @@ var ErrNotFound = errors.New("post not found")
 // limited to events with Timestamp strictly after since — useful for
 // resuming from a cursor without re-reading old history.
 //
-// Returns when the context is cancelled (surfaced as context.Canceled) or
-// when the stream ends.
+// Listen reconnects automatically when the stream drops (server restart,
+// network blip, clean EOF, 5xx) with exponential backoff. Each reconnect
+// uses the timestamp of the most recent event delivered so no events are
+// re-played and none are missed. Reconnect attempts that deliver no
+// events accumulate; after ReconnectMaxAttempts consecutive empty
+// attempts Listen returns the last underlying error. A successful event
+// resets the counter.
+//
+// Returns when the context is cancelled (surfaced as context.Canceled),
+// the callback returns an error, or a non-retryable condition occurs
+// (4xx response, malformed SSE payload, retry budget exhausted).
 func (c *Client) Listen(ctx context.Context, since time.Time, onEvent func(protocol.Event) error) error {
+	initialDelay := c.ReconnectInitialDelay
+	if initialDelay <= 0 {
+		initialDelay = 500 * time.Millisecond
+	}
+	maxDelay := c.ReconnectMaxDelay
+	if maxDelay <= 0 {
+		maxDelay = 30 * time.Second
+	}
+	maxAttempts := c.ReconnectMaxAttempts
+	if maxAttempts == 0 {
+		maxAttempts = 10
+	}
+
+	latest := since
+	failures := 0
+	delay := initialDelay
+	var lastErr error
+
+	for {
+		gotEvent, retryable, err := c.streamEvents(ctx, latest, func(evt protocol.Event) error {
+			if err := onEvent(evt); err != nil {
+				return err
+			}
+			if evt.Post.Timestamp.After(latest) {
+				latest = evt.Post.Timestamp
+			}
+			return nil
+		})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err != nil && !retryable {
+			return err
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if gotEvent {
+			failures = 0
+			delay = initialDelay
+			lastErr = nil
+		} else {
+			failures++
+			if maxAttempts > 0 && failures >= maxAttempts {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("listen: %d reconnects without events", failures)
+				}
+				return lastErr
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
+// streamEvents opens one SSE connection and processes it to completion.
+// It returns:
+//   - gotEvent:   at least one event was successfully delivered to onEvent.
+//   - retryable:  the caller should reconnect after a backoff delay.
+//   - err:        nil on clean EOF, non-nil on any other termination.
+//
+// Categorisation:
+//   - HTTP dial / read errors → retryable.
+//   - HTTP 5xx                → retryable.
+//   - HTTP 4xx                → fatal.
+//   - JSON decode failure     → fatal (malformed stream is a bug).
+//   - onEvent error           → fatal (caller wants out).
+//   - Clean EOF               → retryable (server closed cleanly).
+func (c *Client) streamEvents(ctx context.Context, since time.Time, onEvent func(protocol.Event) error) (gotEvent bool, retryable bool, err error) {
 	u := c.BaseURL + "/events"
 	if !since.IsZero() {
 		u += "?since=" + url.QueryEscape(since.Format(time.RFC3339Nano))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("X-Parley-Agent", c.Agent)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return false, true, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		e := fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		retry := resp.StatusCode >= 500 && resp.StatusCode < 600
+		return false, retry, e
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -162,12 +261,13 @@ func (c *Client) Listen(ctx context.Context, since time.Time, onEvent func(proto
 			}
 			var evt protocol.Event
 			if err := json.Unmarshal([]byte(data.String()), &evt); err != nil {
-				return fmt.Errorf("decode SSE payload: %w", err)
+				return gotEvent, false, fmt.Errorf("decode SSE payload: %w", err)
 			}
 			data.Reset()
 			if err := onEvent(evt); err != nil {
-				return err
+				return gotEvent, false, err
 			}
+			gotEvent = true
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
@@ -182,7 +282,7 @@ func (c *Client) Listen(ctx context.Context, since time.Time, onEvent func(proto
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+		return gotEvent, true, err
 	}
-	return nil
+	return gotEvent, true, nil
 }

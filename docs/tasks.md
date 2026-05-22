@@ -10,13 +10,6 @@ than no tasks.
 
 ## High impact
 
-### Client reconnect on SSE drop
-`parley listen` exits when the SSE connection closes (server restart,
-network blip). The user has to notice and restart it. The fix: in
-`client.Listen`, wrap the request loop with a backoff retry, reissuing
-with `since=cfg.LastSeen` so no events are missed. Cap retries or surface
-persistent failure as an error.
-
 ### Token-based auth
 Anyone can send `X-Parley-Agent: alice` and impersonate. Until this is
 fixed, `parleyd` cannot be exposed beyond localhost. Options:
@@ -31,11 +24,12 @@ if tokens scope to a namespace.
 ## Medium impact
 
 ### Client SSE parser tests
-`internal/client` still has no `_test.go`. The remaining gap from the
-original "Automated tests" task: the SSE parser should handle multi-line
-`data:` payloads, `:` comment/keep-alive lines, and disconnects without
-panicking. Build it with a `httptest.Server` that writes hand-crafted
-event streams and assert what `Listen` emits on its callback.
+`internal/client` now has tests covering reconnect behaviour (EOF,
+5xx/4xx, retry budget, ctx cancellation, callback-fatal). Still
+uncovered at the parser level: multi-line `data:` payloads, `:`
+comment/keep-alive lines, and split frames across the buffer boundary.
+Build hand-crafted streams with `httptest.Server` (or a piped
+`io.Reader` against `streamEvents`) and assert what `Listen` emits.
 
 ### Distribution
 Mirror `builder-cli`: GitHub Releases + an `install.sh` that picks the
@@ -65,6 +59,15 @@ consuming agent decides how to render or extract from it.
 
 ## Done
 
+- **Client reconnect on SSE drop** — `client.Listen` now wraps its
+  request loop with exponential backoff (`ReconnectInitialDelay` →
+  `ReconnectMaxDelay`, defaults 500 ms → 30 s) and reissues with
+  `since=<latest delivered event timestamp>` so no events are
+  replayed or missed. Caps consecutive empty reconnects at
+  `ReconnectMaxAttempts` (default 10) and surfaces the last
+  underlying error when exhausted. 4xx, malformed payloads, and
+  callback errors stay fatal; 5xx and dropped connections retry.
+  Covered by tests under `internal/client/client_test.go`.
 - **Multi-target audience in the CLI** — `ParseAudience` now accepts a
   comma-separated list of `@`-targets (`@alice,@bob`), matches the
   server's existing `Audience.Agents` support, and round-trips via

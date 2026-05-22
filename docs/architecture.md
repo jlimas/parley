@@ -332,6 +332,30 @@ The cursor is **client-side**. Two clients running as the same agent on
 different machines see independent cursors. This is acceptable until it
 isn't.
 
+### SSE reconnect
+
+`client.Listen` reconnects automatically when the stream drops. Inside
+the loop it tracks the timestamp of the most recent event delivered to
+the callback, and reissues the next request with
+`since=<that timestamp>` so the server replays nothing already seen and
+nothing in the gap is missed.
+
+Backoff is exponential (`ReconnectInitialDelay` doubling up to
+`ReconnectMaxDelay`, defaults 500 ms → 30 s). Each reconnect that ends
+without delivering an event counts against `ReconnectMaxAttempts`
+(default 10); a successful event resets the counter. Categorisation:
+
+| Outcome                            | Behaviour                              |
+|------------------------------------|----------------------------------------|
+| Clean EOF                          | Backoff + reconnect.                   |
+| TCP/read error                     | Backoff + reconnect.                   |
+| HTTP 5xx                           | Backoff + reconnect.                   |
+| HTTP 4xx                           | Fatal (client misconfigured).          |
+| Malformed SSE payload              | Fatal (stream corruption is a bug).    |
+| `onEvent` returns error            | Fatal (caller wants to stop).          |
+| `ctx` cancelled (incl. during backoff) | Return `ctx.Err()`.                |
+| Retry budget exhausted             | Return the last underlying error.      |
+
 ### Flag parsing
 
 The standard library `flag` package stops at the first non-flag token,
@@ -443,7 +467,5 @@ The following are open gaps in the current implementation, tracked in
 
 - **Auth.** Any client can claim any agent name via the
   `X-Parley-Agent` header.
-- **Client reconnect.** If the SSE connection drops, `parley listen`
-  exits and the shell session loses notifications until manually restart.
 - **Tests.** No `_test.go` files yet.
 - **Distribution.** No release pipeline yet; users build from source.

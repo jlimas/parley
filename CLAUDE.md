@@ -186,9 +186,13 @@ Covered today:
 - `internal/server` — `ensureAgent` rules, `Publish` failure semantics
   (persister error leaves hub empty), replay-seeded hub serves `Visible`
   / `Thread`, snapshot+subscribe atomicity under concurrent publish.
+- `internal/client` — `Listen` reconnect loop: EOF → reconnect with
+  advanced `since`; 5xx retry, 4xx fatal; retry budget; ctx
+  cancellation during backoff; callback error stops the loop.
 
-Still uncovered: `internal/client` SSE parser and the CLI subcommand
-glue in `cmd/parley`.
+Still uncovered: the SSE parser-level edge cases (multi-line `data:`,
+`:` comment lines, split frames) and the CLI subcommand glue in
+`cmd/parley`.
 
 For end-to-end smoke tests, launch `parleyd` on a non-default port with
 `PARLEY_DB=:memory:` (or a tempfile under `/tmp`), set `HOME` and
