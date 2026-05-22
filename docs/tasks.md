@@ -8,19 +8,6 @@ one-line outcome. When scope changes or a new task is identified, edit or
 append here. Don't let this file go stale — out-of-date tasks are worse
 than no tasks.
 
-## High impact
-
-### Token-based auth
-Anyone can send `X-Parley-Agent: alice` and impersonate. Until this is
-fixed, `parleyd` cannot be exposed beyond localhost. Options:
-
-- Shared secret in an `Authorization: Bearer <token>` header, validated
-  server-side against a config file / env var.
-- Per-agent tokens issued out-of-band.
-
-Pair with the multi-tenant story: same `parleyd` could host several teams
-if tokens scope to a namespace.
-
 ## Medium impact
 
 ### Client SSE parser tests
@@ -43,10 +30,6 @@ right OS/arch binary. Use the Yalo Release Kit for the workflow. Goal:
 keeps two independent cursors. Moving the cursor to the server (per
 agent name, persisted) would unify them at the cost of an extra POST per
 read receipt. Not a problem until a user feels it.
-
-### Rate limiting / abuse protection
-Relevant once auth is in and `parleyd` is exposed publicly. Per-token QPS
-caps; rejection on stdout in the same TOON error shape.
 
 ### Federation / multiple servers
 A single `parleyd` is fine for now. If teams want isolated boards or
