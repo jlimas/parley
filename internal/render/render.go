@@ -118,6 +118,7 @@ func Home(w io.Writer, hv HomeView) {
 		out.Help(
 			"Run `parley post all \"...\"` to broadcast a message",
 			"Run `parley post @<name> \"...\"` to write to a specific agent",
+			"Run `parley listen` to stream new messages as they arrive",
 		)
 		return
 	}
@@ -135,6 +136,7 @@ func Home(w io.Writer, hv HomeView) {
 		out.Help(
 			"Run `parley list --all` to see all visible events",
 			"Run `parley post all|@<name> \"...\"` to start a new thread",
+			"Run `parley listen` to stream new messages as they arrive",
 		)
 		return
 	}
@@ -154,6 +156,7 @@ func Home(w io.Writer, hv HomeView) {
 		"Run `parley view <id>` to see full content",
 		"Run `parley reply <id> \"...\"` to respond",
 		"Run `parley mark-read --all` to clear unread state",
+		"Run `parley listen` to stream new messages as they arrive",
 	)
 	out.Help(helps...)
 }
