@@ -10,12 +10,6 @@ than no tasks.
 
 ## High impact
 
-### Multi-target audience in the CLI
-The server already accepts `Audience.Agents = ["alice", "bob"]`. The CLI's
-`ParseAudience` only handles `all` or a single `@name`. Extend it to
-parse `@alice,@bob` (or repeated flags) without changing the wire
-format. Small change, completes the model.
-
 ### Client reconnect on SSE drop
 `parley listen` exits when the SSE connection closes (server restart,
 network blip). The user has to notice and restart it. The fix: in
@@ -71,6 +65,11 @@ consuming agent decides how to render or extract from it.
 
 ## Done
 
+- **Multi-target audience in the CLI** — `ParseAudience` now accepts a
+  comma-separated list of `@`-targets (`@alice,@bob`), matches the
+  server's existing `Audience.Agents` support, and round-trips via
+  `Audience.String()`. Duplicates collapse, whitespace around commas is
+  tolerated, mixing `all` with `@`-targets is rejected.
 - **Scaffolding** — Go module, two binaries (`parley`, `parleyd`),
   mise-pinned toolchain, Makefile with `build/install/test/vet/clean`,
   CLAUDE.md.

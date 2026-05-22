@@ -11,10 +11,21 @@ func TestParseAudience(t *testing.T) {
 		{in: "all", want: Audience{All: true}},
 		{in: "@alice", want: Audience{Agents: []string{"alice"}}},
 		{in: "@bob_2", want: Audience{Agents: []string{"bob_2"}}},
+		{in: "@alice,@bob", want: Audience{Agents: []string{"alice", "bob"}}},
+		{in: "@alice,@bob,@carol", want: Audience{Agents: []string{"alice", "bob", "carol"}}},
+		{in: "@alice, @bob", want: Audience{Agents: []string{"alice", "bob"}}},
+		{in: "@alice,@alice,@bob", want: Audience{Agents: []string{"alice", "bob"}}},
 		{in: "", wantErr: true},
 		{in: "@", wantErr: true},
 		{in: "alice", wantErr: true},
 		{in: "ALL", wantErr: true},
+		{in: "@alice,", wantErr: true},
+		{in: ",@alice", wantErr: true},
+		{in: "@alice,,@bob", wantErr: true},
+		{in: "@alice,bob", wantErr: true},
+		{in: "all,@alice", wantErr: true},
+		{in: "@alice,all", wantErr: true},
+		{in: "@alice,@", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -44,7 +55,7 @@ func TestParseAudience(t *testing.T) {
 }
 
 func TestAudienceStringRoundTrip(t *testing.T) {
-	cases := []string{"all", "@alice", "@bob"}
+	cases := []string{"all", "@alice", "@bob", "@alice,@bob", "@alice,@bob,@carol"}
 	for _, s := range cases {
 		t.Run(s, func(t *testing.T) {
 			a, err := ParseAudience(s)

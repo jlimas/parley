@@ -42,16 +42,36 @@ func (a Audience) String() string {
 	return strings.Join(parts, ",")
 }
 
-// ParseAudience parses a CLI audience token. Accepted forms: "all" or
-// "@agentName".
+// ParseAudience parses a CLI audience token. Accepted forms: "all",
+// "@agentName", or a comma-separated list of @-targets ("@alice,@bob").
+// "all" cannot be mixed with @-targets. Duplicate names are collapsed,
+// preserving first-occurrence order.
 func ParseAudience(s string) (Audience, error) {
 	if s == "all" {
 		return Audience{All: true}, nil
 	}
-	if strings.HasPrefix(s, "@") && len(s) > 1 {
-		return Audience{Agents: []string{s[1:]}}, nil
+	if s == "" {
+		return Audience{}, fmt.Errorf("invalid audience %q: expected \"all\" or \"@<name>\" (comma-separated for multiple)", s)
 	}
-	return Audience{}, fmt.Errorf("invalid audience %q: expected \"all\" or \"@agentName\"", s)
+	parts := strings.Split(s, ",")
+	agents := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, raw := range parts {
+		p := strings.TrimSpace(raw)
+		if p == "all" {
+			return Audience{}, fmt.Errorf("invalid audience %q: cannot mix \"all\" with @-targets", s)
+		}
+		if !strings.HasPrefix(p, "@") || len(p) <= 1 {
+			return Audience{}, fmt.Errorf("invalid audience %q: expected \"all\" or \"@<name>\" (comma-separated for multiple)", s)
+		}
+		name := p[1:]
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		agents = append(agents, name)
+	}
+	return Audience{Agents: agents}, nil
 }
 
 // Post is a message on the board. A reply is just a Post with ParentID set;

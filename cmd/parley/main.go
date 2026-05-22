@@ -216,12 +216,12 @@ func cmdPost(args []string) int {
 	rest := fs.Args()
 	if len(rest) != 2 {
 		return usageErr("usage: parley post <audience> <content>",
-			"Audience is \"all\" or \"@<name>\"")
+			"Audience is \"all\", \"@<name>\", or \"@a,@b\" for multiple")
 	}
 	audience, err := protocol.ParseAudience(rest[0])
 	if err != nil {
 		return usageErr(err.Error(),
-			"Audience is \"all\" or \"@<name>\"")
+			"Audience is \"all\", \"@<name>\", or \"@a,@b\" for multiple")
 	}
 	cfg, ok := mustIdentity()
 	if !ok {
@@ -243,13 +243,14 @@ func postHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "post",
 		usage:       "parley post <audience> <content> [--full]",
-		description: "Publish a new top-level post. Audience is \"all\" or \"@<name>\". Content is a markdown string.",
+		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Content is a markdown string.",
 		flags: [][2]string{
 			{"--full", "echo the complete content in the returned detail view"},
 		},
 		examples: []string{
 			"parley post all \"Standup in 5 minutes\"",
 			"parley post @alice \"Check this out: ...\"",
+			"parley post @alice,@bob \"Quick sync after standup?\"",
 		},
 	})
 }
