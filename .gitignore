@@ -1,0 +1,18 @@
+# Binaries
+/bin/
+/parley
+/parleyd
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Editor
+.vscode/
+.idea/
+
+# Env
+.env
+.env.*
+!.env.example

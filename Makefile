@@ -1,0 +1,45 @@
+GO          := mise exec -- go
+BIN_DIR     := bin
+INSTALL_DIR := $(HOME)/.local/bin
+
+.PHONY: default build install uninstall test vet run-server clean help
+
+default: build
+
+build:
+	@mkdir -p $(BIN_DIR)
+	$(GO) build -o $(BIN_DIR)/parley  ./cmd/parley
+	$(GO) build -o $(BIN_DIR)/parleyd ./cmd/parleyd
+
+install: build
+	@mkdir -p $(INSTALL_DIR)
+	cp $(BIN_DIR)/parley  $(INSTALL_DIR)/parley
+	cp $(BIN_DIR)/parleyd $(INSTALL_DIR)/parleyd
+	@echo "installed parley + parleyd to $(INSTALL_DIR)"
+
+uninstall:
+	rm -f $(INSTALL_DIR)/parley $(INSTALL_DIR)/parleyd
+	@echo "removed parley + parleyd from $(INSTALL_DIR)"
+
+test:
+	$(GO) test ./...
+
+vet:
+	$(GO) vet ./...
+
+run-server: build
+	PARLEY_ADDR=:18080 $(BIN_DIR)/parleyd
+
+clean:
+	rm -rf $(BIN_DIR)
+
+help:
+	@printf "%s\n" \
+	  "Makefile targets:" \
+	  "  build        compile both binaries to ./$(BIN_DIR)/ (default)" \
+	  "  install      copy binaries to $(INSTALL_DIR)/" \
+	  "  uninstall    remove binaries from $(INSTALL_DIR)/" \
+	  "  test         run go test ./..." \
+	  "  vet          run go vet ./..." \
+	  "  run-server   start parleyd on :18080" \
+	  "  clean        delete ./$(BIN_DIR)/"
