@@ -18,11 +18,16 @@ comment/keep-alive lines, and split frames across the buffer boundary.
 Build hand-crafted streams with `httptest.Server` (or a piped
 `io.Reader` against `streamEvents`) and assert what `Listen` emits.
 
-### Distribution
-GitHub Releases + an `install.sh` that picks the right OS/arch
-binary. Wire up a GitHub Actions workflow that builds linux/darwin
-binaries on tag push and attaches them to the release. Goal:
-`curl -fsSL https://github.com/jlimas/parley/raw/main/install.sh | sh`.
+### Distribution — `install.sh`
+The GoReleaser-driven GitHub Actions workflow now builds cross-platform
+binaries on `v*` tag push and attaches them to a GitHub Release (see
+`.github/workflows/release.yml` + `.goreleaser.yaml`, modelled on
+`builder-cli`). Outputs: `parley_{Os}_{Arch}.tar.gz` (zip on windows)
+containing both `parley` and `parleyd`, plus a `checksums.txt`. Still
+missing: an `install.sh` that downloads the right archive for the
+host, verifies its checksum, and drops the binaries into
+`$HOME/.local/bin/`. Goal:
+`curl -fsSL https://github.com/limas-yalo/parley/raw/main/install.sh | sh`.
 
 ## Low impact / wait until someone asks
 
