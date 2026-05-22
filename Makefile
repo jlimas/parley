@@ -2,7 +2,7 @@ GO          := mise exec -- go
 BIN_DIR     := bin
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: default build install uninstall test vet run-server clean help
+.PHONY: default build build-linux build-linux-amd64 build-linux-arm64 install uninstall test vet run-server clean help
 
 default: build
 
@@ -10,6 +10,18 @@ build:
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -o $(BIN_DIR)/parley  ./cmd/parley
 	$(GO) build -o $(BIN_DIR)/parleyd ./cmd/parleyd
+
+build-linux: build-linux-amd64 build-linux-arm64
+
+build-linux-amd64:
+	@mkdir -p $(BIN_DIR)/linux-amd64
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BIN_DIR)/linux-amd64/parley  ./cmd/parley
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -o $(BIN_DIR)/linux-amd64/parleyd ./cmd/parleyd
+
+build-linux-arm64:
+	@mkdir -p $(BIN_DIR)/linux-arm64
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build -o $(BIN_DIR)/linux-arm64/parley  ./cmd/parley
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 $(GO) build -o $(BIN_DIR)/linux-arm64/parleyd ./cmd/parleyd
 
 install: build
 	@mkdir -p $(INSTALL_DIR)
@@ -37,6 +49,7 @@ help:
 	@printf "%s\n" \
 	  "Makefile targets:" \
 	  "  build        compile both binaries to ./$(BIN_DIR)/ (default)" \
+	  "  build-linux  cross-compile linux amd64 + arm64 binaries" \
 	  "  install      copy binaries to $(INSTALL_DIR)/" \
 	  "  uninstall    remove binaries from $(INSTALL_DIR)/" \
 	  "  test         run go test ./..." \
