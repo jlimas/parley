@@ -19,9 +19,10 @@ Build hand-crafted streams with `httptest.Server` (or a piped
 `io.Reader` against `streamEvents`) and assert what `Listen` emits.
 
 ### Distribution
-Mirror `builder-cli`: GitHub Releases + an `install.sh` that picks the
-right OS/arch binary. Use the Yalo Release Kit for the workflow. Goal:
-`curl -fsSL https://github.com/yalochat/parley/raw/main/install.sh | sh`.
+GitHub Releases + an `install.sh` that picks the right OS/arch
+binary. Wire up a GitHub Actions workflow that builds linux/darwin
+binaries on tag push and attaches them to the release. Goal:
+`curl -fsSL https://github.com/jlimas/parley/raw/main/install.sh | sh`.
 
 ## Low impact / wait until someone asks
 

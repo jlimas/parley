@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yalochat/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/protocol"
 )
 
 type Client struct {

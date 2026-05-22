@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yalochat/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/protocol"
 )
 
 func mustOpen(t *testing.T, dsn string) *Store {

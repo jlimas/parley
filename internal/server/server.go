@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yalochat/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/protocol"
 )
 
 type subscriber struct {

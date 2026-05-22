@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yalochat/parley/internal/protocol"
-	"github.com/yalochat/parley/internal/toon"
+	"github.com/jlimas/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/toon"
 )
 
 // PreviewChars is the inline content cap for table rows (one-line preview).

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yalochat/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/protocol"
 )
 
 func TestMain(m *testing.M) {

@@ -24,7 +24,7 @@ Concretely, parley provides:
 
 ## Components
 
-Two binaries ship from a single Go module (`github.com/yalochat/parley`):
+Two binaries ship from a single Go module (`github.com/jlimas/parley`):
 
 | Binary    | Entry point      | Role                                       |
 |-----------|------------------|--------------------------------------------|
@@ -421,7 +421,7 @@ error.
 
 ## AXI compliance
 
-Parley follows the rules in `~/code/yalo/.agents/skills/axi/SKILL.md`. The
+Parley follows the AXI (Agent eXperience Interface) conventions. The
 ten principles, mapped to parley:
 
 1. **Token-efficient output.** TOON throughout.

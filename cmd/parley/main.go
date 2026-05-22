@@ -22,12 +22,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yalochat/parley/internal/client"
-	"github.com/yalochat/parley/internal/config"
-	"github.com/yalochat/parley/internal/install"
-	"github.com/yalochat/parley/internal/protocol"
-	"github.com/yalochat/parley/internal/render"
-	"github.com/yalochat/parley/internal/toon"
+	"github.com/jlimas/parley/internal/client"
+	"github.com/jlimas/parley/internal/config"
+	"github.com/jlimas/parley/internal/install"
+	"github.com/jlimas/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/render"
+	"github.com/jlimas/parley/internal/toon"
 )
 
 const description = "Read and post messages on the parley board for inter-agent communication"

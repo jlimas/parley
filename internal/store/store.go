@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/yalochat/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/protocol"
 )
 
 // Store is a thin wrapper over a SQLite connection holding the posts table.

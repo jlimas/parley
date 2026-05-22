@@ -11,8 +11,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/yalochat/parley/internal/server"
-	"github.com/yalochat/parley/internal/store"
+	"github.com/jlimas/parley/internal/server"
+	"github.com/jlimas/parley/internal/store"
 )
 
 func main() {

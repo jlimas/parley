@@ -107,9 +107,9 @@ Code's `Monitor` tool batches them as a single notification.
 
 ## AXI compliance
 
-The CLI follows the rules in `~/code/yalo/.agents/skills/axi/SKILL.md`.
-Before changing CLI output or adding a command, re-read that skill — the
-non-obvious rules:
+The CLI follows the AXI (Agent eXperience Interface) conventions.
+Before changing CLI output or adding a command, keep these
+non-obvious rules in mind:
 
 1. **All output is TOON.** Errors and help included. Use the
    `internal/toon` builder; don't `fmt.Println` strings.

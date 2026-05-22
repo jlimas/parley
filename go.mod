@@ -1,4 +1,4 @@
-module github.com/yalochat/parley
+module github.com/jlimas/parley
 
 go 1.26.2
 
