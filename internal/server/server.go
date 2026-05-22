@@ -22,20 +22,33 @@ type subscriber struct {
 	ch    chan protocol.Event
 }
 
+// Persister is the durability hook the hub needs. A Save call must complete
+// (successfully or not) before the post becomes visible in memory.
+type Persister interface {
+	Save(protocol.Post) error
+}
+
 // Hub holds the in-memory state: every post seen so far plus the set of
 // active subscribers. Concurrent access is serialised by mu.
 type Hub struct {
 	mu          sync.Mutex
+	persist     Persister
 	posts       []protocol.Post
 	postsByID   map[string]protocol.Post
 	subscribers map[*subscriber]struct{}
 }
 
-func newHub() *Hub {
-	return &Hub{
-		postsByID:   make(map[string]protocol.Post),
+func newHub(persist Persister, initial []protocol.Post) *Hub {
+	h := &Hub{
+		persist:     persist,
+		postsByID:   make(map[string]protocol.Post, len(initial)),
 		subscribers: make(map[*subscriber]struct{}),
 	}
+	for _, p := range initial {
+		h.posts = append(h.posts, p)
+		h.postsByID[p.ID] = p
+	}
+	return h
 }
 
 func newID() string {
@@ -72,14 +85,20 @@ func eventForPost(p protocol.Post) protocol.Event {
 }
 
 // Publish stores p and fans it out to matching subscribers. ID and Timestamp
-// are populated server-side and returned to the caller.
-func (h *Hub) Publish(p protocol.Post) protocol.Post {
+// are populated server-side and returned to the caller. Persistence runs
+// under the hub lock before the post is exposed in memory, so a write
+// failure leaves both layers consistent (post visible nowhere).
+func (h *Hub) Publish(p protocol.Post) (protocol.Post, error) {
 	h.mu.Lock()
 	if p.ID == "" {
 		p.ID = newID()
 	}
 	if p.Timestamp.IsZero() {
 		p.Timestamp = time.Now().UTC()
+	}
+	if err := h.persist.Save(p); err != nil {
+		h.mu.Unlock()
+		return p, err
 	}
 	h.posts = append(h.posts, p)
 	h.postsByID[p.ID] = p
@@ -110,7 +129,7 @@ func (h *Hub) Publish(p protocol.Post) protocol.Post {
 	}
 	log.Printf("[fanout] event=%s type=%s targets=%d delivered=%d dropped=%d",
 		evt.Post.ID, evt.Type, len(subs), delivered, dropped)
-	return p
+	return p, nil
 }
 
 func (h *Hub) GetPost(id string) (protocol.Post, bool) {
@@ -206,8 +225,10 @@ type Server struct {
 	hub *Hub
 }
 
-func New() *Server {
-	return &Server{hub: newHub()}
+// New constructs a server backed by persist for durability, seeded with
+// initial as the post history to expose immediately on startup.
+func New(persist Persister, initial []protocol.Post) *Server {
+	return &Server{hub: newHub(persist, initial)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -322,12 +343,17 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	// The author always sees their own post.
 	audience = ensureAgent(audience, agent)
 
-	stored := s.hub.Publish(protocol.Post{
+	stored, err := s.hub.Publish(protocol.Post{
 		Author:   agent,
 		Audience: audience,
 		Content:  req.Content,
 		ParentID: req.ParentID,
 	})
+	if err != nil {
+		log.Printf("parleyd: persist post: %v", err)
+		http.Error(w, "persist: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(stored)

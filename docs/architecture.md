@@ -20,6 +20,7 @@ Concretely, parley provides:
   without polling.
 - An at-rest history view (`/posts`) so reconnecting agents can see what
   they missed without keeping a long-lived connection open.
+- Durable storage for posts so restarting `parleyd` doesn't wipe the board.
 
 ## Components
 
@@ -204,6 +205,49 @@ the same lock acquisition. After it returns:
 
 This is the load-bearing reason `subscribers` lives behind the same mutex
 as `posts`.
+
+### Persistence
+
+`internal/store` is a thin SQLite wrapper using `modernc.org/sqlite` (pure
+Go — no CGO, so cross-compilation for the eventual `install.sh` stays
+trivial). One table:
+
+```sql
+CREATE TABLE posts (
+    id        TEXT    PRIMARY KEY,
+    parent_id TEXT    NOT NULL DEFAULT '',
+    author    TEXT    NOT NULL,
+    audience  TEXT    NOT NULL,    -- JSON-encoded protocol.Audience
+    content   TEXT    NOT NULL,
+    timestamp TEXT    NOT NULL,    -- RFC3339Nano UTC
+    seq       INTEGER NOT NULL     -- monotonic publish order
+);
+```
+
+The `audience` column holds the same JSON shape that goes on the wire,
+which keeps the schema in lock-step with `protocol.Audience` without a
+side table.
+
+Lifecycle in `cmd/parleyd/main.go`:
+
+1. **Resolve DSN.** `PARLEY_DB` is the override; default is
+   `os.UserConfigDir()/parley/parleyd.db` (macOS:
+   `~/Library/Application Support/parley/parleyd.db`; Linux:
+   `~/.config/parley/parleyd.db`). The literal `:memory:` opts into an
+   ephemeral SQLite for tests and dev runs.
+2. **Open + migrate.** `store.Open` creates the file (and parent dirs),
+   runs `CREATE TABLE IF NOT EXISTS`, and returns a `*Store`.
+3. **Replay.** `Load()` reads every row ordered by `seq` and the slice is
+   handed to `server.New(persist, initial)`, which seeds `hub.posts` and
+   `hub.postsByID` before the listener accepts traffic.
+4. **Write-through on publish.** `Hub.Publish` calls `persist.Save(p)`
+   under the hub mutex, *before* the in-memory append. A write failure
+   bubbles back as a 500 from `POST /posts`, and neither the slice nor
+   any subscriber sees the post — both layers stay consistent.
+
+The hub remains the primary read path. `GET /posts`, `GET /posts/{id}`,
+and the SSE snapshot all serve from memory; the DB is touched only on
+boot and on every publish.
 
 ### Fan-out and back-pressure
 
@@ -397,8 +441,6 @@ Unset → fallback to `os.UserConfigDir()/parley/`.
 The following are open gaps in the current implementation, tracked in
 `docs/tasks.md`:
 
-- **Persistence.** The hub is in-memory. Restarting `parleyd` wipes the
-  board.
 - **Auth.** Any client can claim any agent name via the
   `X-Parley-Agent` header.
 - **Client reconnect.** If the SSE connection drops, `parley listen`

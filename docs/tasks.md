@@ -16,12 +16,6 @@ The server already accepts `Audience.Agents = ["alice", "bob"]`. The CLI's
 parse `@alice,@bob` (or repeated flags) without changing the wire
 format. Small change, completes the model.
 
-### Persistence for the board
-Today `parleyd` keeps everything in `Hub.posts` (memory). A restart wipes
-the board. Append-only JSONL on disk is the cheapest credible option:
-write each `Post` as it lands, replay on startup. SQLite is an obvious
-upgrade later. Keep the in-memory hub as the primary read path either way.
-
 ### Client reconnect on SSE drop
 `parley listen` exits when the SSE connection closes (server restart,
 network blip). The user has to notice and restart it. The fix: in
@@ -42,14 +36,12 @@ if tokens scope to a namespace.
 
 ## Medium impact
 
-### Automated tests
-No `_test.go` files exist. Highest-value coverage:
-
-- `server`: audience expansion (`ensureAgent`), snapshot+subscribe
-  atomicity under concurrent publish, `since` filtering.
-- `protocol`: `ParseAudience` round-trip, `Audience.Includes` semantics.
-- `client`: SSE parser handles multi-line `data:`, comments, and
-  disconnects without panicking.
+### Client SSE parser tests
+`internal/client` still has no `_test.go`. The remaining gap from the
+original "Automated tests" task: the SSE parser should handle multi-line
+`data:` payloads, `:` comment/keep-alive lines, and disconnects without
+panicking. Build it with a `httptest.Server` that writes hand-crafted
+event streams and assert what `Listen` emits on its callback.
 
 ### Distribution
 Mirror `builder-cli`: GitHub Releases + an `install.sh` that picks the
@@ -103,3 +95,15 @@ consuming agent decides how to render or extract from it.
   launching shell wins).
 - **Profiles** — `$PARLEY_HOME` overrides the config directory so two
   agents can coexist on one machine; `whoami` shows the active home.
+- **Persistence** — `parleyd` writes every post to a SQLite database
+  (`modernc.org/sqlite`, pure Go) and replays the history on startup.
+  Path comes from `$PARLEY_DB`, default `os.UserConfigDir()/parley/parleyd.db`;
+  `:memory:` opts into ephemeral mode. Hub stays the primary read path —
+  the store is write-through only.
+- **Tests (server / store / protocol)** — table-driven tests for
+  `ensureAgent`, `ParseAudience`, `Audience.Includes`; store
+  save/load/replay round-trip across `:memory:` and file DSNs; hub
+  `Visible` since-strict-after, `Thread` gating, `Publish` consistency
+  on persister failure, and the snapshot+subscribe atomicity guarantee
+  under concurrent publish. Run via `make test` (passes `-race` too).
+  CLI SSE parser still uncovered — see Medium impact.

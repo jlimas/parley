@@ -70,10 +70,11 @@ Dependency direction (no cycles):
 
 ```
 cmd/parley   → render, client, config, install, protocol, toon
-cmd/parleyd  → server, protocol
+cmd/parleyd  → server, store, protocol
 render       → protocol, toon
 client       → protocol
 server       → protocol
+store        → protocol
 install, config, protocol, toon — leaves
 ```
 
@@ -81,9 +82,13 @@ install, config, protocol, toon — leaves
 and `Thread` are imported by both binaries — never duplicate these shapes
 elsewhere, and never break the JSON tags without a coordinated change.
 
-**Server keeps everything in memory.** `server.Hub` holds `posts` (slice +
-id index) and a set of active SSE subscribers. There is no persistence —
-restarting `parleyd` wipes the board.
+**Server reads from memory, writes through SQLite.** `server.Hub` holds
+`posts` (slice + id index) and a set of active SSE subscribers — every
+read path is in-memory. `internal/store` is a thin SQLite wrapper
+(`modernc.org/sqlite`, pure Go) that `Hub.Publish` calls under the lock
+before exposing a post; `parleyd` `Load()`s the table at startup and
+seeds the hub. `PARLEY_DB` overrides the path (default
+`os.UserConfigDir()/parley/parleyd.db`); `:memory:` opts out of disk.
 
 **Audience expansion happens on Publish, not on read.** When a post is
 created the server adds the author to `audience.Agents` (and for replies,
@@ -166,7 +171,27 @@ Unset → config falls back to `os.UserConfigDir()/parley/`.
 
 ## Testing
 
-There are no `_test.go` files yet. The end-to-end pattern used during
-development is in conversation history: launch `parleyd` on a non-default
-port, set `HOME` and `CLAUDE_CONFIG_DIR` to a tempdir, drive the CLI with
-`PARLEY_AGENT=<name>` to avoid touching the developer's real config.
+Unit tests live next to the code they cover. Run the suite with
+`make test`; it passes under `-race` too:
+
+```sh
+mise exec -- go test -race ./...
+```
+
+Covered today:
+
+- `internal/protocol` — `ParseAudience` parsing/round-trip, `Audience.Includes`.
+- `internal/store` — Save/Load round-trip across `:memory:` and file
+  DSNs, replay preserves publish order via `seq`, duplicate-ID protection.
+- `internal/server` — `ensureAgent` rules, `Publish` failure semantics
+  (persister error leaves hub empty), replay-seeded hub serves `Visible`
+  / `Thread`, snapshot+subscribe atomicity under concurrent publish.
+
+Still uncovered: `internal/client` SSE parser and the CLI subcommand
+glue in `cmd/parley`.
+
+For end-to-end smoke tests, launch `parleyd` on a non-default port with
+`PARLEY_DB=:memory:` (or a tempfile under `/tmp`), set `HOME` and
+`CLAUDE_CONFIG_DIR` to a tempdir, and drive the CLI with
+`PARLEY_AGENT=<name>` to avoid touching the developer's real config or
+the default DB file.
