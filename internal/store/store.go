@@ -37,7 +37,7 @@ type dialect interface {
 // sqliteDialect implements dialect for SQLite (modernc.org/sqlite driver).
 type sqliteDialect struct{}
 
-func (sqliteDialect) driverName() string { return "sqlite" }
+func (sqliteDialect) driverName() string     { return "sqlite" }
 func (sqliteDialect) rebind(q string) string { return q }
 
 func (sqliteDialect) columnExists(db *sql.DB, table, column string) (bool, error) {
