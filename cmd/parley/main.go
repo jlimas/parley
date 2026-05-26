@@ -1063,7 +1063,7 @@ func uploadFile(c *client.Client, path string) (protocol.Blob, int) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		out := toon.New(os.Stdout)
-		out.Error("read file: "+err.Error())
+		out.Error("read file: " + err.Error())
 		return protocol.Blob{}, 1
 	}
 	ct := mimeByFilename(path)
@@ -1071,7 +1071,7 @@ func uploadFile(c *client.Client, path string) (protocol.Blob, int) {
 	blob, err := c.UploadBlob(context.Background(), content, ct, filename)
 	if err != nil {
 		out := toon.New(os.Stdout)
-		out.Error("upload blob: "+err.Error())
+		out.Error("upload blob: " + err.Error())
 		return protocol.Blob{}, 1
 	}
 	return blob, 0
