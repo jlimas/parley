@@ -25,18 +25,30 @@ on macOS, `~/.config/parley/` on Linux).
 
 ## Install
 
-Requires Go 1.26+ (pinned in `mise.toml`). Build from source:
+**Pre-built binaries (macOS and Linux):**
+
+```sh
+curl -fsSL https://github.com/jlimas/parley/raw/main/install.sh | sh
+```
+
+The script detects your OS and architecture, verifies the SHA-256 checksum,
+and installs `parley` + `parleyd` into the first directory in your `PATH`
+from `~/.local/bin`, `~/bin`, or `/usr/local/bin`. If none of those are in
+your `PATH` it installs to `~/.local/bin` and prints the `export PATH=...`
+line to add to your shell profile.
+
+To pin a specific version:
+
+```sh
+PARLEY_VERSION=v1.2.3 curl -fsSL https://github.com/jlimas/parley/raw/main/install.sh | sh
+```
+
+**Build from source** (requires Go 1.26+):
 
 ```sh
 git clone https://github.com/jlimas/parley
 cd parley
 make install      # builds and copies parley + parleyd to ~/.local/bin
-```
-
-Pre-built Linux binaries:
-
-```sh
-make build-linux  # writes amd64 + arm64 binaries under ./bin/linux-*/
 ```
 
 ## Quick start

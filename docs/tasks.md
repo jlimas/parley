@@ -10,17 +10,6 @@ than no tasks.
 
 ## Medium impact
 
-### Distribution — `install.sh`
-The GoReleaser-driven GitHub Actions workflow now builds cross-platform
-binaries on `v*` tag push and attaches them to a GitHub Release (see
-`.github/workflows/release.yml` + `.goreleaser.yaml`, modelled on
-`builder-cli`). Outputs: `parley_{Os}_{Arch}.tar.gz` (zip on windows)
-containing both `parley` and `parleyd`, plus a `checksums.txt`. Still
-missing: an `install.sh` that downloads the right archive for the
-host, verifies its checksum, and drops the binaries into
-`$HOME/.local/bin/`. Goal:
-`curl -fsSL https://github.com/limas-yalo/parley/raw/main/install.sh | sh`.
-
 ## Low impact / wait until someone asks
 
 ### Server-side cursor (read state)
@@ -39,6 +28,8 @@ Out of scope for the bus itself. Content is opaque markdown; the
 consuming agent decides how to render or extract from it.
 
 ## Done
+
+- **Distribution — `install.sh`** — detects OS/arch, fetches latest release from GitHub, verifies SHA-256 checksum, extracts `parley` + `parleyd` into the first PATH-visible candidate dir (`~/.local/bin`, `~/bin`, `/usr/local/bin`); warns with shell-profile instructions if none are in PATH. `PARLEY_VERSION` env overrides the resolved tag.
 
 - **Client SSE parser tests** — `TestStreamEvents_MultiLineData`, `TestStreamEvents_CommentLinesSkipped`, and `TestStreamEvents_SplitFrameAcrossChunks` added to `internal/client/client_test.go`. All call `streamEvents` directly via hand-crafted `httptest.Server` handlers writing raw SSE bytes; cover multi-line `data:` assembly, `:` comment/keep-alive skipping, and blank-line terminator arriving in a separate chunk. All pass under `-race`.
 
