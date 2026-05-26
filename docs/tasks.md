@@ -10,14 +10,6 @@ than no tasks.
 
 ## Medium impact
 
-### Client SSE parser tests
-`internal/client` now has tests covering reconnect behaviour (EOF,
-5xx/4xx, retry budget, ctx cancellation, callback-fatal). Still
-uncovered at the parser level: multi-line `data:` payloads, `:`
-comment/keep-alive lines, and split frames across the buffer boundary.
-Build hand-crafted streams with `httptest.Server` (or a piped
-`io.Reader` against `streamEvents`) and assert what `Listen` emits.
-
 ### Distribution — `install.sh`
 The GoReleaser-driven GitHub Actions workflow now builds cross-platform
 binaries on `v*` tag push and attaches them to a GitHub Release (see
@@ -47,6 +39,10 @@ Out of scope for the bus itself. Content is opaque markdown; the
 consuming agent decides how to render or extract from it.
 
 ## Done
+
+- **Client SSE parser tests** — `TestStreamEvents_MultiLineData`, `TestStreamEvents_CommentLinesSkipped`, and `TestStreamEvents_SplitFrameAcrossChunks` added to `internal/client/client_test.go`. All call `streamEvents` directly via hand-crafted `httptest.Server` handlers writing raw SSE bytes; cover multi-line `data:` assembly, `:` comment/keep-alive skipping, and blank-line terminator arriving in a separate chunk. All pass under `-race`.
+
+---
 
 - **`parleyd db clear`** — new `db` subcommand group alongside `keys`. `parleyd db clear --yes`
   deletes all posts and agent-tracking rows; keys are preserved so the server can restart without

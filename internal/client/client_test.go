@@ -284,6 +284,146 @@ func TestListen_ContextCancellationDuringBackoff(t *testing.T) {
 	}
 }
 
+// --- SSE parser-level tests (call streamEvents directly) ---
+
+// TestStreamEvents_MultiLineData verifies that multiple consecutive data:
+// lines within one event are joined with \n and decoded as a single event.
+// The JSON is split at a token boundary so the assembled string is valid.
+func TestStreamEvents_MultiLineData(t *testing.T) {
+	ts := time.Unix(1700000000, 0).UTC()
+	evt := makeEvent("ml1", "bob", "hello", ts)
+	payload, err := evt.AsJSON()
+	if err != nil {
+		t.Fatalf("AsJSON: %v", err)
+	}
+	// Split compact JSON after the first comma so the join (...,\n...) is
+	// still valid JSON — newlines are legal whitespace between tokens.
+	split := strings.Index(string(payload), `,"post":`)
+	if split < 0 {
+		t.Fatalf(`expected ,"post": in payload: %s`, payload)
+	}
+	split++ // comma goes on the first line
+	line1 := string(payload)[:split]
+	line2 := string(payload)[split:]
+
+	raw := fmt.Sprintf("data: %s\ndata: %s\n\n", line1, line2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, raw)
+	}))
+	defer srv.Close()
+
+	c := fastClient(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var got []protocol.Event
+	gotEvent, retryable, err := c.streamEvents(ctx, time.Time{}, func(e protocol.Event) error {
+		got = append(got, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("streamEvents err: %v", err)
+	}
+	if !gotEvent {
+		t.Fatal("streamEvents: gotEvent=false, want true")
+	}
+	if !retryable {
+		t.Error("clean EOF should be retryable")
+	}
+	if len(got) != 1 || got[0].Post.ID != "ml1" {
+		t.Fatalf("got events: %+v, want 1 event id=ml1", got)
+	}
+}
+
+// TestStreamEvents_CommentLinesSkipped verifies that SSE comment lines
+// (starting with ':') are silently ignored and do not produce events.
+// Empty lines with no accumulated data are also skipped without error.
+func TestStreamEvents_CommentLinesSkipped(t *testing.T) {
+	ts := time.Unix(1700000001, 0).UTC()
+	evt := makeEvent("c1", "bob", "world", ts)
+	payload, err := evt.AsJSON()
+	if err != nil {
+		t.Fatalf("AsJSON: %v", err)
+	}
+	// comment before event, inline between lines, and trailing keep-alive
+	raw := fmt.Sprintf(": keep-alive\n\n: inline\ndata: %s\n\n: trailing\n\n", payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, raw)
+	}))
+	defer srv.Close()
+
+	c := fastClient(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var got []protocol.Event
+	gotEvent, _, err := c.streamEvents(ctx, time.Time{}, func(e protocol.Event) error {
+		got = append(got, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("streamEvents err: %v", err)
+	}
+	if !gotEvent {
+		t.Fatal("streamEvents: gotEvent=false, want true")
+	}
+	if len(got) != 1 || got[0].Post.ID != "c1" {
+		t.Fatalf("got events: %+v, want 1 event id=c1", got)
+	}
+}
+
+// TestStreamEvents_SplitFrameAcrossChunks verifies that the parser correctly
+// assembles an event when the data line and the blank-line terminator arrive
+// in separate TCP chunks. The scanner must buffer the first chunk and wait
+// for the second before dispatching the event.
+func TestStreamEvents_SplitFrameAcrossChunks(t *testing.T) {
+	ts := time.Unix(1700000002, 0).UTC()
+	evt := makeEvent("sf1", "bob", "split", ts)
+	payload, err := evt.AsJSON()
+	if err != nil {
+		t.Fatalf("AsJSON: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter is not a Flusher")
+			return
+		}
+		// Chunk 1: data line + first newline only.
+		fmt.Fprintf(w, "data: %s\n", payload)
+		flusher.Flush()
+		// Pause so the scanner must wait before receiving the terminator.
+		time.Sleep(20 * time.Millisecond)
+		// Chunk 2: blank line that dispatches the event.
+		fmt.Fprint(w, "\n")
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	c := fastClient(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var got []protocol.Event
+	gotEvent, _, err := c.streamEvents(ctx, time.Time{}, func(e protocol.Event) error {
+		got = append(got, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("streamEvents err: %v", err)
+	}
+	if !gotEvent {
+		t.Fatal("streamEvents: gotEvent=false, want true")
+	}
+	if len(got) != 1 || got[0].Post.ID != "sf1" {
+		t.Fatalf("got events: %+v, want 1 event id=sf1", got)
+	}
+}
+
 func TestListen_OnEventErrorIsFatal(t *testing.T) {
 	t1 := time.Unix(1700000010, 0).UTC()
 	h := newSSEHandler(t,
