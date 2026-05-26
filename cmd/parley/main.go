@@ -58,6 +58,7 @@ func dispatch(args []string) int {
 		"view":        cmdView,
 		"listen":      cmdListen,
 		"mark-read":   cmdMarkRead,
+		"blob":        cmdBlob,
 	}
 	fn, ok := handlers[args[0]]
 	if !ok {
@@ -82,6 +83,7 @@ func printTopHelp() {
 		{"view", "Show a single post with replies"},
 		{"listen", "Stream events live (Monitor-friendly)"},
 		{"mark-read", "Move the unread cursor forward"},
+		{"blob", "Upload or download large content blobs"},
 	})
 	helps := []string{"Run `parley <command> --help` for command-specific options"}
 	if cfg, err := config.Load(); err == nil {
@@ -578,10 +580,11 @@ func healthcheckHelp() {
 // -- post --
 
 func cmdPost(args []string) int {
-	args = reorderFlags(args, "body")
+	args = reorderFlags(args, "body", "blob")
 	fs := flag.NewFlagSet("post", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	body := fs.String("body", "", "longer-form content shown only in detail views")
+	blobPath := fs.String("blob", "", "path to a file to upload and attach to this post")
 	full := fs.Bool("full", false, "show full content in the returned post body")
 	help := fs.Bool("help", false, "show help for this subcommand")
 	if err := fs.Parse(args); err != nil {
@@ -594,7 +597,7 @@ func cmdPost(args []string) int {
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		return usageErr("usage: parley post <audience> <title> [--body=\"...\"]",
+		return usageErr("usage: parley post <audience> <title> [--body=\"...\"] [--blob=<file>]",
 			"Audience is \"all\", \"@<name>\", or \"@a,@b\" for multiple")
 	}
 	audience, err := protocol.ParseAudience(rest[0])
@@ -611,10 +614,21 @@ func cmdPost(args []string) int {
 		return 1
 	}
 	c := newClient(cfg)
+
+	var blobID string
+	if *blobPath != "" {
+		blob, code := uploadFile(c, *blobPath)
+		if code != 0 {
+			return code
+		}
+		blobID = blob.ID
+	}
+
 	post, err := c.Post(context.Background(), client.PostInput{
 		Audience: audience,
 		Title:    title,
 		Content:  *body,
+		BlobID:   blobID,
 	})
 	if err != nil {
 		return stdoutErr(err)
@@ -626,15 +640,17 @@ func cmdPost(args []string) int {
 func postHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "post",
-		usage:       "parley post <audience> <title> [--body=\"...\"] [--full]",
-		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Title is the one-line headline shown in listings; --body adds longer-form markdown content visible in detail views.",
+		usage:       "parley post <audience> <title> [--body=\"...\"] [--blob=<file>] [--full]",
+		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Title is the one-line headline shown in listings; --body adds longer-form markdown content visible in detail views; --blob uploads a file and attaches it to the post.",
 		flags: [][2]string{
 			{"--body", "longer-form content shown only in detail views"},
+			{"--blob", "path to a file to upload and attach to this post"},
 			{"--full", "echo the complete content in the returned detail view"},
 		},
 		examples: []string{
 			"parley post all \"Standup in 5 minutes\"",
 			"parley post all \"PR ready\" --body=\"https://...\\nNeeds two reviewers\"",
+			"parley post all \"Sales data\" --blob=report.csv",
 			"parley post @alice,@bob \"Quick sync after standup?\"",
 		},
 	})
@@ -958,6 +974,154 @@ func markReadHelp() {
 			"parley mark-read 4274857",
 		},
 	})
+}
+
+// -- blob --
+
+func cmdBlob(args []string) int {
+	if len(args) == 0 || isHelpFlag(args[0]) {
+		blobHelp()
+		return 0
+	}
+	switch args[0] {
+	case "upload":
+		return cmdBlobUpload(args[1:])
+	case "get":
+		return cmdBlobGet(args[1:])
+	default:
+		return usageErr(fmt.Sprintf("unknown blob subcommand %q", args[0]),
+			"Available: parley blob upload <file>, parley blob get <id>")
+	}
+}
+
+func cmdBlobUpload(args []string) int {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("blob upload", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.Bool("help", false, "show help")
+	if err := fs.Parse(args); err != nil || *help {
+		blobHelp()
+		return 2
+	}
+	if fs.NArg() != 1 {
+		return usageErr("usage: parley blob upload <file>", "Example: parley blob upload data.csv")
+	}
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+	blob, code := uploadFile(c, fs.Arg(0))
+	if code != 0 {
+		return code
+	}
+	out := toon.New(os.Stdout)
+	out.KV("blob_id", blob.ID)
+	out.KV("size", fmt.Sprintf("%d bytes", blob.Size))
+	if blob.ContentType != "" {
+		out.KV("content_type", blob.ContentType)
+	}
+	if blob.Filename != "" {
+		out.KV("filename", blob.Filename)
+	}
+	out.Help(
+		"Run `parley post <audience> <title> --blob="+fs.Arg(0)+"` to post with this blob in one step",
+		"Run `parley blob get "+blob.ID+"` to download it again",
+	)
+	return 0
+}
+
+func cmdBlobGet(args []string) int {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("blob get", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.Bool("help", false, "show help")
+	if err := fs.Parse(args); err != nil || *help {
+		blobHelp()
+		return 2
+	}
+	if fs.NArg() != 1 {
+		return usageErr("usage: parley blob get <id>", "Example: parley blob get a1b2c3d4e5f6a7b8")
+	}
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+	content, _, _, err := c.DownloadBlob(context.Background(), fs.Arg(0))
+	if err != nil {
+		return stdoutErr(err)
+	}
+	_, _ = os.Stdout.Write(content)
+	return 0
+}
+
+// uploadFile reads a file from disk, detects its MIME type, and uploads it as
+// a blob. Returns the blob metadata and 0 on success, or a non-zero exit code
+// after printing an error.
+func uploadFile(c *client.Client, path string) (protocol.Blob, int) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		out := toon.New(os.Stdout)
+		out.Error("read file: "+err.Error())
+		return protocol.Blob{}, 1
+	}
+	ct := mimeByFilename(path)
+	filename := filepath.Base(path)
+	blob, err := c.UploadBlob(context.Background(), content, ct, filename)
+	if err != nil {
+		out := toon.New(os.Stdout)
+		out.Error("upload blob: "+err.Error())
+		return protocol.Blob{}, 1
+	}
+	return blob, 0
+}
+
+// mimeByFilename guesses a MIME type from the file extension. Falls back to
+// "application/octet-stream" for unknown extensions.
+func mimeByFilename(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".csv":
+		return "text/csv"
+	case ".json":
+		return "application/json"
+	case ".txt", ".md":
+		return "text/plain"
+	case ".html", ".htm":
+		return "text/html"
+	case ".xml":
+		return "application/xml"
+	case ".yaml", ".yml":
+		return "application/yaml"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".pdf":
+		return "application/pdf"
+	case ".gz":
+		return "application/gzip"
+	case ".zip":
+		return "application/zip"
+	}
+	return "application/octet-stream"
+}
+
+func blobHelp() {
+	out := toon.New(os.Stdout)
+	out.KV("command", "parley blob")
+	out.KV("usage", "parley blob <subcommand>")
+	out.KV("description", "Upload and download large content blobs. Blobs are stored server-side and referenced by ID. Attach a blob to a post with `parley post --blob=<file>` or upload standalone and share the ID.")
+	out.Table("subcommands", []string{"name", "purpose"}, [][]any{
+		{"upload <file>", "Upload a file and print its blob ID"},
+		{"get <id>", "Download blob content to stdout"},
+	})
+	out.Help(
+		"parley blob upload data.csv",
+		"parley blob get a1b2c3d4e5f6a7b8",
+		"parley post all \"Sales data\" --blob=report.csv",
+	)
 }
 
 // -- helpers --

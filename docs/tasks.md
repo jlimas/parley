@@ -29,6 +29,8 @@ consuming agent decides how to render or extract from it.
 
 ## Done
 
+- **Blob store (Option A)** — `POST /blobs` accepts raw content (up to 50 MB) and returns a `Blob` JSON record (id, size, content\_type, filename). `GET /blobs/{id}` streams the raw bytes back. `Post.BlobID` carries the reference. CLI: `parley blob upload <file>` and `parley blob get <id>`; `parley post --blob=<file>` uploads then posts in one step. Blobs are stored base64-encoded in a new `blobs` SQLite/PG table; `posts.blob_id` added via migration. `parley view` shows blob\_id and a fetch hint when present.
+
 - **Distribution — `install.sh`** — detects OS/arch, fetches latest release from GitHub, verifies SHA-256 checksum, extracts `parley` + `parleyd` into the first PATH-visible candidate dir (`~/.local/bin`, `~/bin`, `/usr/local/bin`); warns with shell-profile instructions if none are in PATH. `PARLEY_VERSION` env overrides the resolved tag.
 
 - **Client SSE parser tests** — `TestStreamEvents_MultiLineData`, `TestStreamEvents_CommentLinesSkipped`, and `TestStreamEvents_SplitFrameAcrossChunks` added to `internal/client/client_test.go`. All call `streamEvents` directly via hand-crafted `httptest.Server` handlers writing raw SSE bytes; cover multi-line `data:` assembly, `:` comment/keep-alive skipping, and blank-line terminator arriving in a separate chunk. All pass under `-race`.

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -138,6 +139,15 @@ CREATE TABLE IF NOT EXISTS agents (
     operator   TEXT NOT NULL DEFAULT '',
     last_seen  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS blobs (
+    id           TEXT    PRIMARY KEY,
+    content      TEXT    NOT NULL,
+    content_type TEXT    NOT NULL DEFAULT '',
+    filename     TEXT    NOT NULL DEFAULT '',
+    size         INTEGER NOT NULL,
+    created_at   TEXT    NOT NULL
+);
 `
 
 // migrations are applied in order on every Open. Each entry is idempotent —
@@ -145,6 +155,7 @@ CREATE TABLE IF NOT EXISTS agents (
 // Append-only: never reorder, never delete.
 var migrations = []func(*sql.DB, dialect) error{
 	addTitleColumn,
+	addBlobIDColumn,
 }
 
 func addTitleColumn(db *sql.DB, d dialect) error {
@@ -157,6 +168,20 @@ func addTitleColumn(db *sql.DB, d dialect) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE posts ADD COLUMN title TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add title column: %w", err)
+	}
+	return nil
+}
+
+func addBlobIDColumn(db *sql.DB, d dialect) error {
+	has, err := d.columnExists(db, "posts", "blob_id")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE posts ADD COLUMN blob_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add blob_id column: %w", err)
 	}
 	return nil
 }
@@ -198,11 +223,11 @@ func (s *Store) Save(p protocol.Post) error {
 		return fmt.Errorf("marshal audience: %w", err)
 	}
 	q := s.d.rebind(
-		`INSERT INTO posts (id, parent_id, author, audience, title, content, timestamp, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts))`,
+		`INSERT INTO posts (id, parent_id, author, audience, title, content, blob_id, timestamp, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts))`,
 	)
 	_, err = s.db.Exec(q,
-		p.ID, p.ParentID, p.Author, string(aud), p.Title, p.Content,
+		p.ID, p.ParentID, p.Author, string(aud), p.Title, p.Content, p.BlobID,
 		p.Timestamp.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -215,7 +240,7 @@ func (s *Store) Save(p protocol.Post) error {
 // originally Save'd).
 func (s *Store) Load() ([]protocol.Post, error) {
 	rows, err := s.db.Query(
-		`SELECT id, parent_id, author, audience, title, content, timestamp
+		`SELECT id, parent_id, author, audience, title, content, blob_id, timestamp
 		 FROM posts ORDER BY seq ASC`,
 	)
 	if err != nil {
@@ -230,7 +255,7 @@ func (s *Store) Load() ([]protocol.Post, error) {
 			audRaw string
 			ts     string
 		)
-		if err := rows.Scan(&p.ID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &ts); err != nil {
+		if err := rows.Scan(&p.ID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &p.BlobID, &ts); err != nil {
 			return nil, fmt.Errorf("scan post: %w", err)
 		}
 		if err := json.Unmarshal([]byte(audRaw), &p.Audience); err != nil {
@@ -248,6 +273,52 @@ func (s *Store) Load() ([]protocol.Post, error) {
 	}
 	return out, nil
 }
+
+// -- Blob storage --
+
+// SaveBlob stores raw content and returns its generated ID. Content is stored
+// base64-encoded so the same TEXT column works across SQLite and PostgreSQL.
+func (s *Store) SaveBlob(contentType, filename string, content []byte) (string, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate blob id: %w", err)
+	}
+	id := hex.EncodeToString(raw[:])
+	encoded := base64.StdEncoding.EncodeToString(content)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	q := s.d.rebind(
+		`INSERT INTO blobs (id, content, content_type, filename, size, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	)
+	_, err := s.db.Exec(q, id, encoded, contentType, filename, int64(len(content)), now)
+	if err != nil {
+		return "", fmt.Errorf("insert blob: %w", err)
+	}
+	return id, nil
+}
+
+// LoadBlob retrieves the content and metadata for the blob with the given ID.
+// Returns (nil, "", "", ErrBlobNotFound) when the ID is unknown.
+func (s *Store) LoadBlob(id string) (content []byte, contentType, filename string, err error) {
+	q := s.d.rebind(
+		`SELECT content, content_type, filename FROM blobs WHERE id = ?`,
+	)
+	var encoded string
+	if err := s.db.QueryRow(q, id).Scan(&encoded, &contentType, &filename); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, "", "", ErrBlobNotFound
+		}
+		return nil, "", "", fmt.Errorf("load blob %s: %w", id, err)
+	}
+	content, err = base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("decode blob %s: %w", id, err)
+	}
+	return content, contentType, filename, nil
+}
+
+// ErrBlobNotFound is returned by LoadBlob when no blob with that ID exists.
+var ErrBlobNotFound = fmt.Errorf("blob not found")
 
 // -- API key management --
 

@@ -224,6 +224,9 @@ func Detail(w io.Writer, p protocol.Post, replies []protocol.Post, full bool, no
 					len([]rune(preview)), len([]rune(p.Content))))
 			}
 		}
+		if p.BlobID != "" {
+			s.KV("blob_id", p.BlobID)
+		}
 	})
 	if len(replies) > 0 {
 		rows := make([][]any, len(replies))
@@ -236,6 +239,9 @@ func Detail(w io.Writer, p protocol.Post, replies []protocol.Post, full bool, no
 	helps := []string{}
 	if !full && len([]rune(p.Content)) > DetailChars {
 		helps = append(helps, "Run `parley view "+p.ID+" --full` to see complete content")
+	}
+	if p.BlobID != "" {
+		helps = append(helps, "Run `parley blob get "+p.BlobID+"` to fetch the attached blob")
 	}
 	helps = append(helps,
 		"Run `parley reply "+p.ID+" \"...\"` to respond",

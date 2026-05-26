@@ -74,11 +74,22 @@ func ParseAudience(s string) (Audience, error) {
 	return Audience{Agents: agents}, nil
 }
 
+// Blob is the metadata returned when a blob is uploaded. The content is
+// stored server-side; agents reference it by ID in a Post.BlobID field and
+// fetch the raw bytes separately via GET /blobs/{id}.
+type Blob struct {
+	ID          string `json:"id"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+}
+
 // Post is a message on the board. A reply is just a Post with ParentID set;
 // its audience is inherited from the parent.
 //
 // Top-level posts carry a Title (the headline shown in listings) plus an
 // optional Content body. Replies are content-only — Title is empty.
+// BlobID, when non-empty, points to a blob uploaded via POST /blobs.
 type Post struct {
 	ID        string    `json:"id"`
 	ParentID  string    `json:"parent_id,omitempty"`
@@ -86,6 +97,7 @@ type Post struct {
 	Audience  Audience  `json:"audience"`
 	Title     string    `json:"title,omitempty"`
 	Content   string    `json:"content,omitempty"`
+	BlobID    string    `json:"blob_id,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 

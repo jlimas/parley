@@ -67,6 +67,7 @@ func main() {
 	srv := server.New(db, initial, server.Options{
 		Keys:    db,
 		Tracker: db,
+		Blobs:   db,
 	})
 	log.Printf("parleyd listening on %s", addr)
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {

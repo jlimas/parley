@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,6 +62,7 @@ type PostInput struct {
 	Title    string            `json:"title,omitempty"`
 	Content  string            `json:"content,omitempty"`
 	ParentID string            `json:"parent_id,omitempty"`
+	BlobID   string            `json:"blob_id,omitempty"`
 }
 
 // Post sends a new post (or reply, when ParentID is set) and returns the
@@ -148,6 +150,72 @@ func (c *Client) View(ctx context.Context, id string) (protocol.Thread, error) {
 
 // ErrNotFound is returned by View when the post id is unknown or hidden.
 var ErrNotFound = errors.New("post not found")
+
+// UploadBlob sends raw content to POST /blobs and returns the blob metadata.
+// contentType should be a MIME type (e.g. "text/csv"); an empty string is sent
+// as-is and the server defaults to "application/octet-stream". filename is
+// optional and is sent as X-Parley-Filename.
+func (c *Client) UploadBlob(ctx context.Context, content []byte, contentType, filename string) (protocol.Blob, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/blobs", bytes.NewReader(content))
+	if err != nil {
+		return protocol.Blob{}, err
+	}
+	c.setHeaders(req)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if filename != "" {
+		req.Header.Set("X-Parley-Filename", filename)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return protocol.Blob{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return protocol.Blob{}, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var blob protocol.Blob
+	if err := json.NewDecoder(resp.Body).Decode(&blob); err != nil {
+		return protocol.Blob{}, err
+	}
+	return blob, nil
+}
+
+// DownloadBlob fetches the raw content of a blob by ID. The returned
+// contentType and filename reflect whatever was recorded at upload time.
+func (c *Client) DownloadBlob(ctx context.Context, id string) (content []byte, contentType, filename string, err error) {
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/blobs/"+url.PathEscape(id), nil)
+	if reqErr != nil {
+		return nil, "", "", reqErr
+	}
+	c.setHeaders(req)
+	resp, doErr := c.HTTP.Do(req)
+	if doErr != nil {
+		return nil, "", "", doErr
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, "", "", ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, "", "", fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	content, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", "", err
+	}
+	contentType = resp.Header.Get("Content-Type")
+	// Parse filename from Content-Disposition if present.
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		if _, params, parseErr := mime.ParseMediaType(cd); parseErr == nil {
+			filename = params["filename"]
+		}
+	}
+	return content, contentType, filename, nil
+}
 
 // Ping checks whether the server is reachable by calling GET /healthz.
 // It does not require an API key.

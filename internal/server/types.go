@@ -12,6 +12,7 @@ type CreatePostInput struct {
 		Title    *string            `json:"title,omitempty"     doc:"Headline (required for top-level posts, omit for replies)"`
 		Content  *string            `json:"content,omitempty"   doc:"Markdown body"`
 		ParentID *string            `json:"parent_id,omitempty" doc:"Set to reply to an existing post"`
+		BlobID   *string            `json:"blob_id,omitempty"   doc:"ID of a blob uploaded via POST /blobs"`
 	}
 }
 

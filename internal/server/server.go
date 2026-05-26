@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -45,12 +46,21 @@ type AgentTracker interface {
 	UpsertAgent(name, operator string) error
 }
 
+// BlobStore stores and retrieves raw blob content. A nil BlobStore disables
+// the blob upload and download endpoints (both return 501).
+type BlobStore interface {
+	SaveBlob(contentType, filename string, content []byte) (id string, err error)
+	LoadBlob(id string) (content []byte, contentType, filename string, err error)
+}
+
 // Options configures optional server features.
 type Options struct {
 	// Keys enables API key authentication. Nil = no auth (all requests allowed).
 	Keys KeyValidator
 	// Tracker records the agent→operator mapping. Nil = not tracked.
 	Tracker AgentTracker
+	// Blobs enables POST /blobs and GET /blobs/{id}. Nil = endpoints disabled.
+	Blobs BlobStore
 }
 
 // Hub holds the in-memory state: every post seen so far plus the set of
@@ -251,16 +261,18 @@ type Server struct {
 	hub          *Hub
 	keyValidator KeyValidator
 	agentTracker AgentTracker
+	blobStore    BlobStore
 }
 
 // New constructs a server backed by persist for durability, seeded with
 // initial as the post history to expose immediately on startup. Optional
-// opts configure API key authentication and agent tracking.
+// opts configure API key authentication, agent tracking, and blob storage.
 func New(persist Persister, initial []protocol.Post, opts ...Options) *Server {
 	s := &Server{hub: newHub(persist, initial)}
 	if len(opts) > 0 {
 		s.keyValidator = opts[0].Keys
 		s.agentTracker = opts[0].Tracker
+		s.blobStore = opts[0].Blobs
 	}
 	return s
 }
@@ -268,10 +280,12 @@ func New(persist Persister, initial []protocol.Post, opts ...Options) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Raw handlers: SSE and health stay outside Huma so they keep their own
-	// streaming/plain-text behaviour. Auth middleware below still covers /events.
+	// Raw handlers: SSE, health, and blobs stay outside Huma to preserve their
+	// streaming/binary behaviour. Auth middleware below still covers these paths.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /events", s.handleEvents)
+	mux.HandleFunc("POST /blobs", s.handleUploadBlob)
+	mux.HandleFunc("GET /blobs/{id}", s.handleDownloadBlob)
 
 	cfg := huma.DefaultConfig("Parley API", "0.1.0")
 	cfg.DocsPath = "" // we register /docs ourselves to add persistAuthorization
@@ -491,6 +505,7 @@ func (s *Server) handleCreatePost(_ context.Context, input *CreatePostInput) (*C
 		Title:    title,
 		Content:  ptrStr(input.Body.Content),
 		ParentID: parentID,
+		BlobID:   ptrStr(input.Body.BlobID),
 	})
 	if err != nil {
 		log.Printf("parleyd: persist post: %v", err)
@@ -600,6 +615,79 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+const maxBlobBytes = 50 << 20 // 50 MB
+
+func (s *Server) handleUploadBlob(w http.ResponseWriter, r *http.Request) {
+	if s.blobStore == nil {
+		http.Error(w, "blob storage not configured", http.StatusNotImplemented)
+		return
+	}
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	filename := r.Header.Get("X-Parley-Filename")
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBlobBytes)
+	content, err := io.ReadAll(r.Body)
+	if err != nil {
+		if err.Error() == "http: request body too large" {
+			http.Error(w, fmt.Sprintf("blob too large (max %d MB)", maxBlobBytes>>20), http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(content) == 0 {
+		http.Error(w, "blob body must not be empty", http.StatusBadRequest)
+		return
+	}
+
+	id, err := s.blobStore.SaveBlob(ct, filename, content)
+	if err != nil {
+		log.Printf("parleyd: save blob: %v", err)
+		http.Error(w, "save blob: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("[blob] upload id=%s size=%d content_type=%s filename=%q", id, len(content), ct, filename)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(protocol.Blob{
+		ID:          id,
+		Size:        int64(len(content)),
+		ContentType: ct,
+		Filename:    filename,
+	})
+}
+
+func (s *Server) handleDownloadBlob(w http.ResponseWriter, r *http.Request) {
+	if s.blobStore == nil {
+		http.Error(w, "blob storage not configured", http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	content, ct, filename, err := s.blobStore.LoadBlob(id)
+	if err != nil {
+		if err.Error() == "blob not found" {
+			http.Error(w, "blob not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("parleyd: load blob %s: %v", id, err)
+		http.Error(w, "load blob: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	if filename != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 // swaggerUIHTML is served at /docs. persistAuthorization keeps the Bearer
