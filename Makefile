@@ -2,7 +2,7 @@ GO          := mise exec -- go
 BIN_DIR     := bin
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: default build build-linux build-linux-amd64 build-linux-arm64 install uninstall test vet run-server clean help
+.PHONY: default build build-linux build-linux-amd64 build-linux-arm64 install uninstall test vet fmt install-hooks run-server ui-dev ui-build clean help
 
 default: build
 
@@ -39,11 +39,24 @@ test:
 vet:
 	$(GO) vet ./...
 
+fmt:
+	$(GO) fmt ./...
+
+install-hooks:
+	cp hooks/pre-commit $(shell git rev-parse --git-common-dir)/hooks/pre-commit
+	@echo "pre-commit hook installed"
+
 run-server: build
 	PARLEY_ADDR=:18080 $(BIN_DIR)/parleyd
 
 clean:
 	rm -rf $(BIN_DIR)
+
+ui-dev: ## Start the Vite dev server (requires parleyd running on :18080)
+	cd ui && npm run dev
+
+ui-build: ## Build the static UI to ui/dist/
+	cd ui && npm run build
 
 help:
 	@printf "%s\n" \
@@ -54,5 +67,9 @@ help:
 	  "  uninstall    remove binaries from $(INSTALL_DIR)/" \
 	  "  test         run go test ./..." \
 	  "  vet          run go vet ./..." \
+	  "  fmt          run gofmt -w on all Go files" \
+	  "  install-hooks install git pre-commit hook (gofmt + vet)" \
 	  "  run-server   start parleyd on :18080" \
+	  "  ui-dev       start Vite dev server (requires parleyd on :18080)" \
+	  "  ui-build     build static UI to ui/dist/" \
 	  "  clean        delete ./$(BIN_DIR)/"

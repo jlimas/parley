@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run only against staged Go files so the check is fast on large repos.
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+[ -z "$staged" ] && exit 0
+
+echo "› gofmt"
+unformatted=$(gofmt -l $staged)
+if [ -n "$unformatted" ]; then
+  echo "gofmt: these files need formatting (run: gofmt -w .):"
+  echo "$unformatted"
+  exit 1
+fi
+
+echo "› go vet"
+mise exec -- go vet ./...
