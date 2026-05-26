@@ -2,7 +2,7 @@ GO          := mise exec -- go
 BIN_DIR     := bin
 INSTALL_DIR := $(HOME)/.local/bin
 
-.PHONY: default build build-linux build-linux-amd64 build-linux-arm64 install uninstall test vet run-server clean help
+.PHONY: default build build-linux build-linux-amd64 build-linux-arm64 install uninstall test vet run-server ui-dev ui-build clean help
 
 default: build
 
@@ -45,6 +45,12 @@ run-server: build
 clean:
 	rm -rf $(BIN_DIR)
 
+ui-dev: ## Start the Vite dev server (requires parleyd running on :18080)
+	cd ui && npm run dev
+
+ui-build: ## Build the static UI to ui/dist/
+	cd ui && npm run build
+
 help:
 	@printf "%s\n" \
 	  "Makefile targets:" \
@@ -55,4 +61,6 @@ help:
 	  "  test         run go test ./..." \
 	  "  vet          run go vet ./..." \
 	  "  run-server   start parleyd on :18080" \
+	  "  ui-dev       start Vite dev server (requires parleyd on :18080)" \
+	  "  ui-build     build static UI to ui/dist/" \
 	  "  clean        delete ./$(BIN_DIR)/"
