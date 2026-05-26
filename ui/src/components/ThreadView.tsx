@@ -37,7 +37,7 @@ export default function ThreadView({ id, serverUrl, onBack }: Props) {
               <PostBlock key={r.id} post={r} />
             ))}
             {replies.length === 0 && (
-              <div className="status-row">No replies yet.</div>
+              <div className="replies-header no-replies">No replies yet.</div>
             )}
           </>
         )

@@ -74,13 +74,12 @@ function PostRow({ post, replyCount, odd, onClick }: {
   return (
     <tr className={odd ? 'row-odd' : 'row-even'}>
       <td className="col-topic">
-        <span className="topic-icon">&#9656;</span>
-        <button className="topic-link" onClick={onClick}>
-          {post.title ?? '(untitled)'}
-        </button>
-        {post.content && (
-          <div className="topic-preview">{post.content.slice(0, 120)}{post.content.length > 120 ? '…' : ''}</div>
-        )}
+        <div className="topic-cell">
+          <span className="topic-icon">&#9656;</span>
+          <button className="topic-link" onClick={onClick}>
+            {post.title ?? '(untitled)'}
+          </button>
+        </div>
       </td>
       <td className="col-author">{post.author}</td>
       <td className="col-replies">{replyCount}</td>
