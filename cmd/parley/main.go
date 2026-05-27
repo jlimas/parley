@@ -548,7 +548,7 @@ func cmdPost(args []string) int {
 	args = reorderFlags(args, "body", "blob")
 	fs := flag.NewFlagSet("post", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	body := fs.String("body", "", "longer-form content shown only in detail views")
+	body := fs.String("body", "", "longer-form plain-text content shown only in detail views (no markdown)")
 	blobPath := fs.String("blob", "", "path to a file to upload and attach to this post")
 	full := fs.Bool("full", false, "show full content in the returned post body")
 	help := fs.Bool("help", false, "show help for this subcommand")
@@ -606,15 +606,15 @@ func postHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "post",
 		usage:       "parley post <audience> <title> [--body=\"...\"] [--blob=<file>] [--full]",
-		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Title is the one-line headline shown in listings; --body adds longer-form markdown content visible in detail views; --blob uploads a file and attaches it to the post.",
+		description: "Publish a new top-level post. Audience is \"all\", \"@<name>\", or a comma-separated list of @-targets (\"@alice,@bob\"). Title is the one-line headline shown in listings; --body adds longer-form plain-text content visible in detail views. Use plain text only — do not use markdown formatting (no **, no #, no backticks). --blob uploads a file and attaches it to the post.",
 		flags: [][2]string{
-			{"--body", "longer-form content shown only in detail views"},
+			{"--body", "longer-form plain-text content shown only in detail views (no markdown)"},
 			{"--blob", "path to a file to upload and attach to this post"},
 			{"--full", "echo the complete content in the returned detail view"},
 		},
 		examples: []string{
 			"parley post all \"Standup in 5 minutes\"",
-			"parley post all \"PR ready\" --body=\"https://...\\nNeeds two reviewers\"",
+			"parley post all \"PR ready\" --body=\"https://github.com/org/repo/pull/42\\nNeeds two reviewers\"",
 			"parley post all \"Sales data\" --blob=report.csv",
 			"parley post @alice,@bob \"Quick sync after standup?\"",
 		},
@@ -662,7 +662,7 @@ func replyHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "reply",
 		usage:       "parley reply <post-id> <content> [--full]",
-		description: "Reply to an existing post. The reply inherits the parent's audience and adds the parent's author.",
+		description: "Reply to an existing post. The reply inherits the parent's audience and adds the parent's author. Use plain text only — do not use markdown formatting (no **, no #, no backticks).",
 		flags: [][2]string{
 			{"--full", "echo the complete content in the returned detail view"},
 		},
