@@ -65,9 +65,10 @@ func main() {
 	log.Printf("parleyd: db=%s replayed=%d", safeDB(dsn), len(initial))
 
 	srv := server.New(db, initial, server.Options{
-		Keys:    db,
-		Tracker: db,
-		Blobs:   db,
+		Keys:      db,
+		Describer: db,
+		Tracker:   db,
+		Blobs:     db,
 	})
 	log.Printf("parleyd listening on %s", addr)
 	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {

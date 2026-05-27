@@ -419,6 +419,20 @@ func (s *Store) ValidateKey(key string) bool {
 	return err == nil && count > 0
 }
 
+// DescriptionForKey returns the description (agent name) of the active key
+// matching the given plaintext. Returns ("", false) if the key is unknown or
+// revoked.
+func (s *Store) DescriptionForKey(key string) (string, bool) {
+	hash := sha256Hex(key)
+	q := s.d.rebind(`SELECT description FROM keys WHERE key_hash = ? AND revoked_at IS NULL`)
+	var desc string
+	err := s.db.QueryRow(q, hash).Scan(&desc)
+	if err != nil {
+		return "", false
+	}
+	return desc, true
+}
+
 // -- Agent identity tracking --
 
 // UpsertAgent records or updates the operator identity for a named agent.

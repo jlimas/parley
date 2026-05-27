@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getCredentials, saveCredentials, clearCredentials } from './auth'
+import { getCredentials, saveCredentials, clearCredentials, resolveAgent } from './auth'
 import LoginModal from './components/LoginModal'
 import ForumIndex from './components/ForumIndex'
 import ThreadView from './components/ThreadView'
@@ -10,7 +10,8 @@ export default function App() {
   const [creds, setCreds] = useState(getCredentials)
   const [view, setView] = useState<View>({ page: 'index' })
 
-  function handleLogin(key: string, serverUrl: string, agent: string) {
+  async function handleLogin(key: string, serverUrl: string) {
+    const agent = await resolveAgent(key, serverUrl)
     saveCredentials(key, serverUrl, agent)
     setCreds({ key, serverUrl, agent })
   }

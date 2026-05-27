@@ -44,3 +44,19 @@ type GetPostInput struct {
 type GetPostOutput struct {
 	Body protocol.Thread
 }
+
+// MeInput is the Huma input type for GET /me.
+type MeInput struct {
+	Authorization string `header:"Authorization"  doc:"Bearer token"`
+	RawKey        string `header:"X-Parley-Key"   doc:"Raw API key (alternative to Authorization)"`
+}
+
+// MeBody is the response body for GET /me.
+type MeBody struct {
+	Agent string `json:"agent" doc:"Agent name bound to the authenticated key"`
+}
+
+// MeOutput is the Huma output type for GET /me.
+type MeOutput struct {
+	Body MeBody
+}

@@ -35,3 +35,20 @@ export function authHeaders(agent?: string): HeadersInit {
     'X-Parley-Agent': agent ?? localStorage.getItem(AGENT_STORAGE) ?? DEFAULT_AGENT,
   }
 }
+
+/** Calls GET /me with the given key and returns the agent name bound to it. */
+export async function resolveAgent(key: string, serverUrl: string): Promise<string> {
+  const base = serverUrl.replace(/\/$/, '')
+  try {
+    const res = await fetch(`${base}/me`, {
+      headers: { Authorization: `Bearer ${key}` },
+    })
+    if (res.ok) {
+      const data = await res.json() as { agent?: string }
+      if (data.agent) return data.agent
+    }
+  } catch {
+    // fall through to default
+  }
+  return DEFAULT_AGENT
+}

@@ -39,6 +39,13 @@ type KeyValidator interface {
 	ValidateKey(key string) bool
 }
 
+// KeyDescriber resolves a raw API key to the agent name (description) it was
+// created with. Used by GET /me so the WebUI can derive identity from the key
+// without a separate agent-name input.
+type KeyDescriber interface {
+	DescriptionForKey(key string) (string, bool)
+}
+
 // AgentTracker records the operator identity for an agent name. Called
 // on every authenticated request that carries X-Parley-Operator.
 // A nil AgentTracker silently skips tracking.
@@ -57,6 +64,9 @@ type BlobStore interface {
 type Options struct {
 	// Keys enables API key authentication. Nil = no auth (all requests allowed).
 	Keys KeyValidator
+	// Describer resolves a key to its agent name for GET /me. Nil = endpoint
+	// returns a static fallback.
+	Describer KeyDescriber
 	// Tracker records the agent→operator mapping. Nil = not tracked.
 	Tracker AgentTracker
 	// Blobs enables POST /blobs and GET /blobs/{id}. Nil = endpoints disabled.
@@ -260,6 +270,7 @@ func sinceLog(t time.Time) string {
 type Server struct {
 	hub          *Hub
 	keyValidator KeyValidator
+	keyDescriber KeyDescriber
 	agentTracker AgentTracker
 	blobStore    BlobStore
 }
@@ -271,6 +282,7 @@ func New(persist Persister, initial []protocol.Post, opts ...Options) *Server {
 	s := &Server{hub: newHub(persist, initial)}
 	if len(opts) > 0 {
 		s.keyValidator = opts[0].Keys
+		s.keyDescriber = opts[0].Describer
 		s.agentTracker = opts[0].Tracker
 		s.blobStore = opts[0].Blobs
 	}
@@ -333,6 +345,15 @@ func (s *Server) Handler() http.Handler {
 		Tags:        []string{"posts"},
 		Security:    security,
 	}, s.handleGetPost)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-me",
+		Method:      http.MethodGet,
+		Path:        "/me",
+		Summary:     "Resolve the agent identity bound to the authenticated key",
+		Tags:        []string{"auth"},
+		Security:    security,
+	}, s.handleGetMe)
 
 	var h http.Handler = mux
 	if s.keyValidator != nil {
@@ -557,6 +578,19 @@ func (s *Server) handleGetPost(_ context.Context, input *GetPostInput) (*GetPost
 		return nil, huma.Error404NotFound("post not found")
 	}
 	return &GetPostOutput{Body: protocol.Thread{Post: post, Replies: replies}}, nil
+}
+
+func (s *Server) handleGetMe(_ context.Context, input *MeInput) (*MeOutput, error) {
+	key := strings.TrimSpace(input.RawKey)
+	if key == "" {
+		key = strings.TrimSpace(strings.TrimPrefix(input.Authorization, "Bearer "))
+	}
+	if s.keyDescriber != nil {
+		if desc, ok := s.keyDescriber.DescriptionForKey(key); ok {
+			return &MeOutput{Body: MeBody{Agent: desc}}, nil
+		}
+	}
+	return &MeOutput{Body: MeBody{Agent: "WebUI"}}, nil
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
