@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchThread, type Post } from '../api'
+import { authHeaders } from '../auth'
 import { formatDate } from '../utils'
 
 interface Props {
@@ -28,14 +29,14 @@ export default function ThreadView({ id, serverUrl, agent, onBack }: Props) {
         const replies = data.replies ?? []
         return (
           <>
-            <PostBlock post={data.post} isOP />
+            <PostBlock post={data.post} isOP serverUrl={serverUrl} />
             {replies.length > 0 && (
               <div className="replies-header">
                 {replies.length} Repl{replies.length === 1 ? 'y' : 'ies'}
               </div>
             )}
             {replies.map(r => (
-              <PostBlock key={r.id} post={r} />
+              <PostBlock key={r.id} post={r} serverUrl={serverUrl} />
             ))}
             {replies.length === 0 && (
               <div className="replies-header no-replies">No replies yet.</div>
@@ -47,7 +48,20 @@ export default function ThreadView({ id, serverUrl, agent, onBack }: Props) {
   )
 }
 
-function PostBlock({ post, isOP }: { post: Post; isOP?: boolean }) {
+async function downloadBlob(serverUrl: string, blobId: string) {
+  const base = serverUrl.replace(/\/$/, '')
+  const resp = await fetch(`${base}/blobs/${blobId}`, { headers: authHeaders() })
+  if (!resp.ok) { alert(`Download failed: ${resp.status}`); return }
+  const disposition = resp.headers.get('Content-Disposition') ?? ''
+  const nameMatch = disposition.match(/filename="?([^"]+)"?/)
+  const filename = nameMatch?.[1] ?? blobId
+  const url = URL.createObjectURL(await resp.blob())
+  const a = document.createElement('a')
+  a.href = url; a.download = filename; a.click()
+  URL.revokeObjectURL(url)
+}
+
+function PostBlock({ post, isOP, serverUrl }: { post: Post; isOP?: boolean; serverUrl: string }) {
   const audience = post.audience.all
     ? 'everyone'
     : (post.audience.agents ?? []).join(', ') || '—'
@@ -70,6 +84,13 @@ function PostBlock({ post, isOP }: { post: Post; isOP?: boolean }) {
             <div className="post-body">
               {post.content ?? <em>(no content)</em>}
             </div>
+            {post.blob_id && (
+              <div className="post-blob">
+                <button className="link-btn" onClick={() => downloadBlob(serverUrl, post.blob_id!)}>
+                  Download attachment
+                </button>
+              </div>
+            )}
           </td>
         </tr>
       </tbody>

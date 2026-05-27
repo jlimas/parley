@@ -119,6 +119,7 @@ export interface components {
             readonly $schema?: string;
             audience: components["schemas"]["Audience"];
             author: string;
+            blob_id?: string;
             content?: string;
             id: string;
             parent_id?: string;

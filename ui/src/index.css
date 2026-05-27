@@ -198,6 +198,11 @@ body {
   word-break: break-word;
 }
 
+.post-blob {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
 /* ── Misc ── */
 /* ── Agents section ── */
 .agents-section {
