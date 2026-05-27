@@ -1,11 +1,12 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html { background: #c8cdd3; }
+
 body {
   font-family: Verdana, Tahoma, Arial, sans-serif;
   font-size: 12px;
   background: #c8cdd3;
   color: #333;
-  min-height: 100vh;
 }
 
 .page-wrap {
