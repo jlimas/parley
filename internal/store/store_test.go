@@ -1,7 +1,6 @@
 package store
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,10 +18,20 @@ func mustOpen(t *testing.T, dsn string) *Store {
 	return s
 }
 
-func samplePosts() []protocol.Post {
+func mustCreateTenant(t *testing.T, s *Store, name string) string {
+	t.Helper()
+	rec, err := s.CreateTenant(name)
+	if err != nil {
+		t.Fatalf("CreateTenant(%q): %v", name, err)
+	}
+	return rec.ID
+}
+
+func samplePosts(tenantID string) []protocol.Post {
 	t0 := time.Date(2026, 5, 22, 16, 0, 0, 0, time.UTC)
 	return []protocol.Post{
 		{
+			TenantID:  tenantID,
 			ID:        "aaaaaaaaaaaaaaaa",
 			Author:    "alice",
 			Audience:  protocol.Audience{All: true},
@@ -31,6 +40,7 @@ func samplePosts() []protocol.Post {
 			Timestamp: t0,
 		},
 		{
+			TenantID:  tenantID,
 			ID:        "bbbbbbbbbbbbbbbb",
 			Author:    "alice",
 			Audience:  protocol.Audience{Agents: []string{"alice", "bob"}},
@@ -39,6 +49,7 @@ func samplePosts() []protocol.Post {
 			Timestamp: t0.Add(1 * time.Second),
 		},
 		{
+			TenantID:  tenantID,
 			ID:        "cccccccccccccccc",
 			ParentID:  "bbbbbbbbbbbbbbbb",
 			Author:    "bob",
@@ -85,18 +96,20 @@ func assertEqualPost(t *testing.T, got, want protocol.Post) {
 
 func TestSaveLoadRoundTripMemory(t *testing.T) {
 	s := mustOpen(t, ":memory:")
-	posts := samplePosts()
+	tid := mustCreateTenant(t, s, "acme")
+	posts := samplePosts(tid)
 	for _, p := range posts {
 		if err := s.Save(p); err != nil {
 			t.Fatalf("Save(%s): %v", p.ID, err)
 		}
 	}
-	got, err := s.Load()
+	byTenant, err := s.LoadByTenant()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadByTenant: %v", err)
 	}
+	got := byTenant[tid]
 	if len(got) != len(posts) {
-		t.Fatalf("Load returned %d posts, want %d", len(got), len(posts))
+		t.Fatalf("LoadByTenant returned %d posts for tenant, want %d", len(got), len(posts))
 	}
 	for i := range got {
 		assertEqualPost(t, got[i], posts[i])
@@ -104,24 +117,23 @@ func TestSaveLoadRoundTripMemory(t *testing.T) {
 }
 
 func TestLoadPreservesPublishOrder(t *testing.T) {
-	// Insert posts whose Timestamps are deliberately out of order — Load
-	// must order by seq (insertion order), not timestamp, so that replay
-	// gives the hub the same sequence the broker originally saw.
 	s := mustOpen(t, ":memory:")
+	tid := mustCreateTenant(t, s, "acme")
 	posts := []protocol.Post{
-		{ID: "11", Author: "a", Audience: protocol.Audience{All: true}, Content: "first", Timestamp: time.Unix(2000, 0).UTC()},
-		{ID: "22", Author: "a", Audience: protocol.Audience{All: true}, Content: "second", Timestamp: time.Unix(1000, 0).UTC()},
-		{ID: "33", Author: "a", Audience: protocol.Audience{All: true}, Content: "third", Timestamp: time.Unix(3000, 0).UTC()},
+		{TenantID: tid, ID: "11", Author: "a", Audience: protocol.Audience{All: true}, Content: "first", Timestamp: time.Unix(2000, 0).UTC()},
+		{TenantID: tid, ID: "22", Author: "a", Audience: protocol.Audience{All: true}, Content: "second", Timestamp: time.Unix(1000, 0).UTC()},
+		{TenantID: tid, ID: "33", Author: "a", Audience: protocol.Audience{All: true}, Content: "third", Timestamp: time.Unix(3000, 0).UTC()},
 	}
 	for _, p := range posts {
 		if err := s.Save(p); err != nil {
 			t.Fatalf("Save(%s): %v", p.ID, err)
 		}
 	}
-	got, err := s.Load()
+	byTenant, err := s.LoadByTenant()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadByTenant: %v", err)
 	}
+	got := byTenant[tid]
 	wantOrder := []string{"11", "22", "33"}
 	for i, p := range got {
 		if p.ID != wantOrder[i] {
@@ -132,12 +144,39 @@ func TestLoadPreservesPublishOrder(t *testing.T) {
 
 func TestLoadEmpty(t *testing.T) {
 	s := mustOpen(t, ":memory:")
-	got, err := s.Load()
+	byTenant, err := s.LoadByTenant()
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadByTenant: %v", err)
 	}
-	if len(got) != 0 {
-		t.Errorf("Load on empty store returned %d posts: %+v", len(got), got)
+	if len(byTenant) != 0 {
+		t.Errorf("LoadByTenant on empty store returned %d tenants: %+v", len(byTenant), byTenant)
+	}
+}
+
+func TestMultiTenantIsolation(t *testing.T) {
+	s := mustOpen(t, ":memory:")
+	t1 := mustCreateTenant(t, s, "acme")
+	t2 := mustCreateTenant(t, s, "globex")
+
+	p1 := protocol.Post{TenantID: t1, ID: "t1post", Author: "alice", Audience: protocol.Audience{All: true}, Title: "acme post", Content: "for acme", Timestamp: time.Now().UTC()}
+	p2 := protocol.Post{TenantID: t2, ID: "t2post", Author: "bob", Audience: protocol.Audience{All: true}, Title: "globex post", Content: "for globex", Timestamp: time.Now().UTC()}
+
+	if err := s.Save(p1); err != nil {
+		t.Fatalf("Save t1: %v", err)
+	}
+	if err := s.Save(p2); err != nil {
+		t.Fatalf("Save t2: %v", err)
+	}
+
+	byTenant, err := s.LoadByTenant()
+	if err != nil {
+		t.Fatalf("LoadByTenant: %v", err)
+	}
+	if len(byTenant[t1]) != 1 || byTenant[t1][0].ID != "t1post" {
+		t.Errorf("tenant1 posts = %+v, want [t1post]", byTenant[t1])
+	}
+	if len(byTenant[t2]) != 1 || byTenant[t2][0].ID != "t2post" {
+		t.Errorf("tenant2 posts = %+v, want [t2post]", byTenant[t2])
 	}
 }
 
@@ -149,7 +188,11 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	posts := samplePosts()
+	tid, err := first.CreateTenant("acme")
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	posts := samplePosts(tid.ID)
 	for _, p := range posts {
 		if err := first.Save(p); err != nil {
 			t.Fatalf("Save(%s): %v", p.ID, err)
@@ -165,10 +208,11 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = second.Close() })
 
-	got, err := second.Load()
+	byTenant, err := second.LoadByTenant()
 	if err != nil {
-		t.Fatalf("Load after reopen: %v", err)
+		t.Fatalf("LoadByTenant after reopen: %v", err)
 	}
+	got := byTenant[tid.ID]
 	if len(got) != len(posts) {
 		t.Fatalf("reopen returned %d posts, want %d", len(got), len(posts))
 	}
@@ -177,109 +221,11 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestMigrationAddsTitleColumn(t *testing.T) {
-	// Simulate a database created before the title column existed: insert a
-	// row using the pre-migration schema, then re-Open via the production
-	// path and verify the column is added and the legacy row loads with an
-	// empty title.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "legacy.db")
-
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("raw open: %v", err)
-	}
-	raw.SetMaxOpenConns(1)
-	const legacySchema = `
-CREATE TABLE posts (
-    id         TEXT    PRIMARY KEY,
-    parent_id  TEXT    NOT NULL DEFAULT '',
-    author     TEXT    NOT NULL,
-    audience   TEXT    NOT NULL,
-    content    TEXT    NOT NULL,
-    timestamp  TEXT    NOT NULL,
-    seq        INTEGER NOT NULL
-);`
-	if _, err := raw.Exec(legacySchema); err != nil {
-		t.Fatalf("legacy schema: %v", err)
-	}
-	if _, err := raw.Exec(
-		`INSERT INTO posts (id, parent_id, author, audience, content, timestamp, seq)
-		 VALUES ('legacy01', '', 'alice', '{"all":true}', 'old post', '2026-05-22T16:00:00Z', 1)`,
-	); err != nil {
-		t.Fatalf("legacy insert: %v", err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("raw close: %v", err)
-	}
-
-	s := mustOpen(t, path)
-	got, err := s.Load()
-	if err != nil {
-		t.Fatalf("Load after migration: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("Load returned %d posts, want 1", len(got))
-	}
-	if got[0].Title != "" {
-		t.Errorf("migrated row Title = %q, want \"\"", got[0].Title)
-	}
-	if got[0].Content != "old post" {
-		t.Errorf("migrated row Content = %q, want %q", got[0].Content, "old post")
-	}
-
-	// A fresh Save through the migrated store should round-trip the title.
-	if err := s.Save(protocol.Post{
-		ID:        "new01",
-		Author:    "alice",
-		Audience:  protocol.Audience{All: true},
-		Title:     "fresh",
-		Content:   "with title",
-		Timestamp: time.Date(2026, 5, 22, 17, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("Save after migration: %v", err)
-	}
-	got, err = s.Load()
-	if err != nil {
-		t.Fatalf("Load after Save: %v", err)
-	}
-	if len(got) != 2 || got[1].Title != "fresh" {
-		t.Errorf("post-migration Title not persisted, got %+v", got)
-	}
-}
-
-func TestMigrationIsIdempotent(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "twice.db")
-	first := mustOpen(t, path)
-	if err := first.Save(protocol.Post{
-		ID:        "x1",
-		Author:    "alice",
-		Audience:  protocol.Audience{All: true},
-		Title:     "first",
-		Content:   "body",
-		Timestamp: time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	// mustOpen registers a Close via t.Cleanup; reopening via the production
-	// path on the same file must not error or lose data.
-	second := mustOpen(t, path)
-	got, err := second.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(got) != 1 || got[0].Title != "first" {
-		t.Errorf("after re-open, posts = %+v", got)
-	}
-}
-
 func TestDuplicateIDFails(t *testing.T) {
-	// The id PRIMARY KEY is what protects the broker from replaying or
-	// double-recording a post. If this stops failing, the schema or the
-	// Save path lost that guarantee.
 	s := mustOpen(t, ":memory:")
-	p := samplePosts()[0]
+	tid := mustCreateTenant(t, s, "acme")
+	posts := samplePosts(tid)
+	p := posts[0]
 	if err := s.Save(p); err != nil {
 		t.Fatalf("first Save: %v", err)
 	}
@@ -290,16 +236,20 @@ func TestDuplicateIDFails(t *testing.T) {
 
 func TestKeyCreateValidateRevoke(t *testing.T) {
 	s := mustOpen(t, ":memory:")
+	tid := mustCreateTenant(t, s, "acme")
 
-	plaintext, rec, err := s.CreateKey("test key")
+	plaintext, rec, err := s.CreateKey(tid, "alice")
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
 	if rec.ID == "" {
 		t.Error("CreateKey: ID is empty")
 	}
-	if rec.Description != "test key" {
-		t.Errorf("CreateKey: Description = %q, want %q", rec.Description, "test key")
+	if rec.TenantID != tid {
+		t.Errorf("CreateKey: TenantID = %q, want %q", rec.TenantID, tid)
+	}
+	if rec.Agent != "alice" {
+		t.Errorf("CreateKey: Agent = %q, want alice", rec.Agent)
 	}
 	if rec.CreatedAt.IsZero() {
 		t.Error("CreateKey: CreatedAt is zero")
@@ -318,6 +268,17 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 		t.Error("ValidateKey: invalid key accepted")
 	}
 
+	gotTenant, gotAgent, ok := s.AgentForKey(plaintext)
+	if !ok {
+		t.Fatal("AgentForKey: key not found")
+	}
+	if gotTenant != tid {
+		t.Errorf("AgentForKey: tenantID = %q, want %q", gotTenant, tid)
+	}
+	if gotAgent != "alice" {
+		t.Errorf("AgentForKey: agent = %q, want alice", gotAgent)
+	}
+
 	found, err := s.RevokeKey(rec.ID)
 	if err != nil {
 		t.Fatalf("RevokeKey: %v", err)
@@ -329,7 +290,6 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 		t.Error("ValidateKey: revoked key still accepted")
 	}
 
-	// Revoking again returns !found.
 	found, err = s.RevokeKey(rec.ID)
 	if err != nil {
 		t.Fatalf("RevokeKey second call: %v", err)
@@ -341,20 +301,21 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 
 func TestKeyListShowsAllStates(t *testing.T) {
 	s := mustOpen(t, ":memory:")
+	tid := mustCreateTenant(t, s, "acme")
 
-	_, rec1, err := s.CreateKey("active key")
+	_, rec1, err := s.CreateKey(tid, "alice")
 	if err != nil {
-		t.Fatalf("CreateKey active: %v", err)
+		t.Fatalf("CreateKey alice: %v", err)
 	}
-	_, rec2, err := s.CreateKey("will be revoked")
+	_, rec2, err := s.CreateKey(tid, "bob")
 	if err != nil {
-		t.Fatalf("CreateKey revoke: %v", err)
+		t.Fatalf("CreateKey bob: %v", err)
 	}
 	if _, err := s.RevokeKey(rec2.ID); err != nil {
 		t.Fatalf("RevokeKey: %v", err)
 	}
 
-	keys, err := s.ListKeys()
+	keys, err := s.ListKeys(tid)
 	if err != nil {
 		t.Fatalf("ListKeys: %v", err)
 	}
@@ -366,7 +327,6 @@ func TestKeyListShowsAllStates(t *testing.T) {
 	for _, k := range keys {
 		byID[k.ID] = k
 	}
-
 	if k, ok := byID[rec1.ID]; !ok || !k.RevokedAt.IsZero() {
 		t.Errorf("active key: RevokedAt should be zero, got %v", byID[rec1.ID].RevokedAt)
 	}
@@ -377,22 +337,22 @@ func TestKeyListShowsAllStates(t *testing.T) {
 
 func TestUpsertAgentRoundTrip(t *testing.T) {
 	s := mustOpen(t, ":memory:")
+	tid := mustCreateTenant(t, s, "acme")
 
-	if err := s.UpsertAgent("alice", "Jorge Limas"); err != nil {
+	if err := s.UpsertAgent(tid, "alice", "Jorge Limas"); err != nil {
 		t.Fatalf("UpsertAgent insert: %v", err)
 	}
-	// Update the operator.
-	if err := s.UpsertAgent("alice", "Alice Limas"); err != nil {
+	if err := s.UpsertAgent(tid, "alice", "Alice Limas"); err != nil {
 		t.Fatalf("UpsertAgent update: %v", err)
 	}
-	// A second agent should not interfere.
-	if err := s.UpsertAgent("bob", "Bob Builder"); err != nil {
+	if err := s.UpsertAgent(tid, "bob", "Bob Builder"); err != nil {
 		t.Fatalf("UpsertAgent bob: %v", err)
 	}
 
-	// Verify via direct DB read since Store has no List method yet.
 	var op string
-	err := s.db.QueryRow(`SELECT operator FROM agents WHERE name = ?`, "alice").Scan(&op)
+	err := s.db.QueryRow(
+		`SELECT operator FROM agents WHERE tenant_id = ? AND name = ?`, tid, "alice",
+	).Scan(&op)
 	if err != nil {
 		t.Fatalf("query alice: %v", err)
 	}

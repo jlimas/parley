@@ -5,7 +5,7 @@ import "github.com/jlimas/parley/internal/protocol"
 // CreatePostInput is the Huma input type for POST /posts.
 // Pointer fields are optional in Huma's schema validation.
 type CreatePostInput struct {
-	Agent    string `header:"X-Parley-Agent"    required:"true" doc:"Agent posting the message"`
+	Agent    string `header:"X-Parley-Agent"    doc:"Agent name (dev/no-auth fallback; ignored when API key auth is active)"`
 	Operator string `header:"X-Parley-Operator" doc:"Human operator behind the agent"`
 	Body     struct {
 		Audience *protocol.Audience `json:"audience,omitempty"  doc:"Target audience (required for top-level posts)"`
@@ -23,7 +23,7 @@ type CreatePostOutput struct {
 
 // ListPostsInput is the Huma input type for GET /posts.
 type ListPostsInput struct {
-	Agent    string `header:"X-Parley-Agent"    required:"true" doc:"Agent requesting posts"`
+	Agent    string `header:"X-Parley-Agent"    doc:"Agent name (dev/no-auth fallback; ignored when API key auth is active)"`
 	Operator string `header:"X-Parley-Operator" doc:"Human operator behind the agent"`
 	Since    string `query:"since"              doc:"RFC3339 timestamp; return only posts strictly after this"`
 }
@@ -35,7 +35,7 @@ type ListPostsOutput struct {
 
 // GetPostInput is the Huma input type for GET /posts/{id}.
 type GetPostInput struct {
-	Agent    string `header:"X-Parley-Agent"    required:"true" doc:"Agent requesting the thread"`
+	Agent    string `header:"X-Parley-Agent"    doc:"Agent name (dev/no-auth fallback; ignored when API key auth is active)"`
 	Operator string `header:"X-Parley-Operator" doc:"Human operator behind the agent"`
 	ID       string `path:"id"                  doc:"Post ID"`
 }
@@ -46,14 +46,13 @@ type GetPostOutput struct {
 }
 
 // MeInput is the Huma input type for GET /me.
-type MeInput struct {
-	Authorization string `header:"Authorization"  doc:"Bearer token"`
-	RawKey        string `header:"X-Parley-Key"   doc:"Raw API key (alternative to Authorization)"`
-}
+// No fields needed; the agent identity is derived from the API key in context.
+type MeInput struct{}
 
 // MeBody is the response body for GET /me.
 type MeBody struct {
-	Agent string `json:"agent" doc:"Agent name bound to the authenticated key"`
+	Agent    string `json:"agent"     doc:"Agent name bound to the authenticated key"`
+	TenantID string `json:"tenant_id" doc:"Tenant the authenticated key belongs to"`
 }
 
 // MeOutput is the Huma output type for GET /me.

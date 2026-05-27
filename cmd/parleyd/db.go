@@ -9,7 +9,6 @@ import (
 	"github.com/jlimas/parley/internal/toon"
 )
 
-// cmdDB dispatches parleyd db <clear>.
 func cmdDB(args []string) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
 		dbHelp()
@@ -29,7 +28,9 @@ func cmdDB(args []string) int {
 
 func dbHelp() {
 	fmt.Fprintf(os.Stderr, "usage: parleyd db <clear>\n\n")
-	fmt.Fprintf(os.Stderr, "  clear [--yes] [--keys]   delete all posts (and optionally keys) from the database\n\n")
+	fmt.Fprintf(os.Stderr, "  clear [--yes] [--tenant <id>] [--keys]   delete posts (and optionally keys)\n\n")
+	fmt.Fprintf(os.Stderr, "  --tenant <id>   scope deletion to one tenant (omit for all tenants)\n")
+	fmt.Fprintf(os.Stderr, "  --keys          also delete API keys (and tenants when no --tenant is given)\n\n")
 	fmt.Fprintf(os.Stderr, "The database path is read from PARLEY_DB (default: OS user config dir).\n")
 	fmt.Fprintf(os.Stderr, "Run this while parleyd is stopped to avoid in-flight request failures.\n")
 }
@@ -38,19 +39,15 @@ func cmdDBClear(args []string) int {
 	fs := flag.NewFlagSet("db clear", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	yes := fs.Bool("yes", false, "confirm the destructive operation")
-	keys := fs.Bool("keys", false, "also delete all API keys (requires minting new keys before next use)")
+	tenantID := fs.String("tenant", "", "scope deletion to one tenant (default: all)")
+	keys := fs.Bool("keys", false, "also delete API keys (and tenants if --tenant is not set)")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: parleyd db clear [--yes] [--keys]")
+		fmt.Fprintln(os.Stderr, "usage: parleyd db clear [--yes] [--tenant <id>] [--keys]")
 		return 2
 	}
 
 	if !*yes {
 		fmt.Fprintln(os.Stderr, "error: --yes is required to confirm this destructive operation")
-		if *keys {
-			fmt.Fprintln(os.Stderr, "       this will permanently delete all posts AND all API keys")
-		} else {
-			fmt.Fprintln(os.Stderr, "       this will permanently delete all posts from the database")
-		}
 		fmt.Fprintln(os.Stderr, "       re-run with --yes to proceed")
 		return 2
 	}
@@ -62,13 +59,16 @@ func cmdDBClear(args []string) int {
 	}
 	defer db.Close()
 
-	posts, deletedKeys, err := db.Clear(*keys)
+	posts, deletedKeys, err := db.Clear(*tenantID, *keys)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
 	out := toon.New(os.Stdout)
+	if *tenantID != "" {
+		out.KV("tenant_id", *tenantID)
+	}
 	out.KV("posts_deleted", posts)
 	if *keys {
 		out.KV("keys_deleted", deletedKeys)
@@ -76,7 +76,7 @@ func cmdDBClear(args []string) int {
 	out.KV("status", "cleared")
 	hints := []string{"Restart parleyd to begin fresh"}
 	if *keys {
-		hints = append(hints, "Run `parleyd keys create --description \"...\"` to mint a new API key before starting")
+		hints = append(hints, "Run `parleyd keys create --tenant <id> --agent <name>` to mint new keys")
 	}
 	out.Help(hints...)
 	return 0

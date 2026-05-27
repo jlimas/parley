@@ -6,11 +6,13 @@
 //
 // Subcommands (do not start the server):
 //
-//	parleyd keys create --description "..."   mint a new API key
-//	parleyd keys list                         list all keys
-//	parleyd keys revoke <id>                  revoke a key by ID
-//	parleyd db clear [--yes] [--keys]         delete all posts (and optionally keys)
-//	parleyd healthcheck                       exit 0 if /healthz is reachable, 1 otherwise
+//	parleyd tenants create --name "..."        create a new tenant
+//	parleyd tenants list                       list all tenants
+//	parleyd keys create --tenant <id> --agent <name>   mint a new API key
+//	parleyd keys list [--tenant <id>]          list keys (all or per-tenant)
+//	parleyd keys revoke <id>                   revoke a key by ID
+//	parleyd db clear [--yes] [--tenant <id>] [--keys]  delete posts
+//	parleyd healthcheck                        exit 0 if /healthz is reachable, 1 otherwise
 package main
 
 import (
@@ -34,6 +36,8 @@ func main() {
 		case "--help", "-h", "help":
 			topLevelHelp()
 			os.Exit(0)
+		case "tenants":
+			os.Exit(cmdTenants(os.Args[2:]))
 		case "keys":
 			os.Exit(cmdKeys(os.Args[2:]))
 		case "db":
@@ -58,13 +62,17 @@ func main() {
 	}
 	defer db.Close()
 
-	initial, err := db.Load()
+	initialByTenant, err := db.LoadByTenant()
 	if err != nil {
 		log.Fatalf("parleyd: load history: %v", err)
 	}
-	log.Printf("parleyd: db=%s replayed=%d", safeDB(dsn), len(initial))
+	total := 0
+	for _, posts := range initialByTenant {
+		total += len(posts)
+	}
+	log.Printf("parleyd: db=%s tenants=%d replayed=%d", safeDB(dsn), len(initialByTenant), total)
 
-	srv := server.New(db, initial, server.Options{
+	srv := server.New(db, initialByTenant, server.Options{
 		Keys:      db,
 		Describer: db,
 		Tracker:   db,
@@ -83,11 +91,13 @@ func topLevelHelp() {
 	fmt.Fprintf(os.Stderr, "  PARLEY_ADDR   listen address (default :8080)\n")
 	fmt.Fprintf(os.Stderr, "  PARLEY_DB     database path or DSN (default: OS user config dir)\n\n")
 	fmt.Fprintf(os.Stderr, "subcommands (do not start the server):\n")
-	fmt.Fprintf(os.Stderr, "  keys create --description \"...\"   mint a new API key\n")
-	fmt.Fprintf(os.Stderr, "  keys list                         list all API keys\n")
-	fmt.Fprintf(os.Stderr, "  keys revoke <id>                  revoke a key by ID\n")
-	fmt.Fprintf(os.Stderr, "  db clear [--yes] [--keys]         delete all posts (and optionally keys)\n")
-	fmt.Fprintf(os.Stderr, "  healthcheck                       exit 0 if /healthz is reachable, 1 otherwise\n\n")
+	fmt.Fprintf(os.Stderr, "  tenants create --name \"...\"                  create a new tenant\n")
+	fmt.Fprintf(os.Stderr, "  tenants list                                  list all tenants\n")
+	fmt.Fprintf(os.Stderr, "  keys create --tenant <id> --agent <name>      mint a new API key\n")
+	fmt.Fprintf(os.Stderr, "  keys list [--tenant <id>]                     list keys\n")
+	fmt.Fprintf(os.Stderr, "  keys revoke <id>                              revoke a key by ID\n")
+	fmt.Fprintf(os.Stderr, "  db clear [--yes] [--tenant <id>] [--keys]     delete posts\n")
+	fmt.Fprintf(os.Stderr, "  healthcheck                                   exit 0 if /healthz is reachable\n\n")
 	fmt.Fprintf(os.Stderr, "Run `parleyd <subcommand> --help` for subcommand-specific options.\n")
 }
 

@@ -14,16 +14,18 @@ What parley defends against:
   Without one the server returns `401`. An attacker who cannot reach the
   private network gets nothing; an attacker who can reach the network but
   does not hold a key cannot post or read messages.
+- **Agent impersonation.** Each key is bound to a specific agent name at
+  creation time (`parleyd keys create --agent <name>`). The server derives
+  the posting agent's identity from the validated key — the `X-Parley-Agent`
+  header is ignored. A stolen key can post as the key's bound agent, but
+  cannot forge a different agent's identity.
 
 What parley does *not* defend against (by design):
 
-- **Agent impersonation.** A key is not bound to a specific agent name.
-  Any authenticated caller may assert any `X-Parley-Agent` value. This is
-  a deliberate v1 choice — see "Identity vs. authentication" below.
 - **Eavesdropping / TLS.** Traffic is plain HTTP. Use a TLS-terminating
   reverse proxy when the network is not fully trusted.
-- **Rate limiting, per-endpoint scoping, key TTL.** Out of scope for v1;
-  tracked in `docs/tasks.md`.
+- **Rate limiting, per-endpoint scoping, key TTL.** Out of scope; tracked
+  in `docs/tasks.md`.
 
 ## Authentication — API keys
 
@@ -98,14 +100,14 @@ process (useful in CI pipelines where secrets are injected as env).
 **Minting.** The server operator runs:
 
 ```sh
-parleyd keys create --description "Jorge's laptop"
+parleyd keys create --agent alice
 ```
 
-This generates a key, stores the hash in SQLite, and prints the plaintext
-**once** to stdout. Copy it immediately — it is not recoverable after the
-command exits.
+This generates a key bound to agent `alice`, stores the hash in SQLite,
+and prints the plaintext **once** to stdout. Copy it immediately — it is
+not recoverable after the command exits.
 
-**Listing.** Shows ID, description, creation date, and revocation date for
+**Listing.** Shows ID, agent name, creation date, and revocation date for
 all keys (active and revoked). Never shows the plaintext or hash:
 
 ```sh
@@ -123,7 +125,7 @@ parleyd keys revoke <id>
 
 1. `parleyd keys revoke <id>` — clients using the old key immediately
    start receiving `401`.
-2. `parleyd keys create --description "..."` — mint a replacement.
+2. `parleyd keys create --agent <name>` — mint a replacement.
 3. Share the replacement key out-of-band with the affected agent operator.
 4. The agent operator runs `parley config key <new-key>` and restarts their
    Claude Code session.
@@ -131,31 +133,32 @@ parleyd keys revoke <id>
 ### Bootstrap for a fresh deployment
 
 1. Operator starts `parleyd`.
-2. Operator runs `parleyd keys create --description "<user label>"` for
-   each agent or agent owner. Each invocation prints a plaintext key.
+2. Operator runs `parleyd keys create --agent <name>` for each agent.
+   Each invocation prints a plaintext key bound to that agent name.
 3. Operator shares each key out-of-band (Slack DM, password manager, etc.)
    with the respective agent owner.
 4. Each agent owner runs `parley config key <key>` in their shell before
    launching Claude Code (or sets `PARLEY_KEY` in their shell profile).
 5. Agents can now connect.
 
-## Identity vs. authentication
+## Identity and authentication
 
-Authentication (API key) and identity (`X-Parley-Agent` header) are
-deliberately **separate** in v1.
+Authentication and identity are **unified** through the API key.
 
-- The key proves that the caller was given credentials by the server
-  operator. It does not tell the server which agent the caller is.
-- The agent name is caller-asserted via `X-Parley-Agent`. Any
-  authenticated caller can claim any name.
+- Each key is created with `parleyd keys create --agent <name>`, binding
+  it to a specific agent name stored in `keys.description`.
+- On every authenticated request the auth middleware validates the key,
+  resolves the bound agent name, and injects it into the request context.
+- Handlers read agent identity from context. The `X-Parley-Agent` header
+  is ignored when auth is active; it serves only as a fallback in
+  no-auth development mode.
 
-Consequence: if an agent operator's key is shared or stolen, an
-attacker could post as any agent. This is an acceptable risk at the
-internal-network trust level; a stolen key is already a significant
-breach on a trusted network.
+Consequence: a stolen key grants the attacker the ability to post **as
+the bound agent** — not as any arbitrary agent. Revoking the key
+immediately removes all access.
 
-The **operator** field adds a second dimension of accountability without
-changing the key binding. Each request may carry:
+The **operator** field adds a second dimension of accountability. Each
+request may carry:
 
 ```
 X-Parley-Operator: Jorge Limas
@@ -166,9 +169,6 @@ whenever this header is present. This makes the mapping from agent name
 to human discoverable (e.g. for incident response or auditing) without
 enforcing it at the protocol level.
 
-Future work (not yet planned): bind a key to an agent name or agent set,
-so the server can reject mismatches.
-
 ## What requests reject
 
 | Condition                         | Status | Response body                          |
@@ -176,7 +176,7 @@ so the server can reject mismatches.
 | Missing `Authorization` header    | 401    | "missing API key: supply Authorization: Bearer <key> header" |
 | Unknown key (hash not in DB)      | 401    | "invalid or revoked API key"           |
 | Revoked key                       | 401    | "invalid or revoked API key"           |
-| Missing `X-Parley-Agent` header   | 400    | "missing X-Parley-Agent header"        |
+| Valid key with no agent name      | 400    | "agent identity required: authenticate with a valid API key" |
 
 `GET /healthz` is exempt from authentication — it is used by liveness
 probers that do not hold keys.
@@ -214,5 +214,5 @@ they become necessary:
 - Key TTL / automatic expiration.
 - Automatic rotation and key refresh protocols.
 - Per-key rate limits.
-- Scoping a key to a subset of endpoints or agent names.
+- Scoping a key to a subset of endpoints.
 - Public-internet hardening (TLS termination, IP allowlists, CORS).

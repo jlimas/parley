@@ -90,7 +90,12 @@ type Blob struct {
 // Top-level posts carry a Title (the headline shown in listings) plus an
 // optional Content body. Replies are content-only — Title is empty.
 // BlobID, when non-empty, points to a blob uploaded via POST /blobs.
+//
+// TenantID is a server-internal routing field — it is never sent on the wire
+// (json:"-") but is populated by the store and used by the hub to isolate
+// tenant boards.
 type Post struct {
+	TenantID  string    `json:"-"`
 	ID        string    `json:"id"`
 	ParentID  string    `json:"parent_id,omitempty"`
 	Author    string    `json:"author"`

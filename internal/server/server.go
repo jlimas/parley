@@ -26,56 +26,74 @@ type subscriber struct {
 	ch    chan protocol.Event
 }
 
-// Persister is the durability hook the hub needs. A Save call must complete
-// (successfully or not) before the post becomes visible in memory.
+// Persister is the durability hook the hub needs.
 type Persister interface {
 	Save(protocol.Post) error
 }
 
 // KeyValidator checks whether a raw API key is active and non-revoked.
-// When the server is constructed without a KeyValidator (nil), all requests
-// are allowed through without authentication.
+// When nil, all requests are allowed through without authentication.
 type KeyValidator interface {
 	ValidateKey(key string) bool
 }
 
-// KeyDescriber resolves a raw API key to the agent name (description) it was
-// created with. Used by GET /me so the WebUI can derive identity from the key
-// without a separate agent-name input.
+// KeyDescriber resolves a raw API key to its (tenantID, agent) pair.
+// Used by the auth middleware to derive identity from the key on every request.
 type KeyDescriber interface {
-	DescriptionForKey(key string) (string, bool)
+	AgentForKey(key string) (tenantID, agent string, ok bool)
 }
 
-// AgentTracker records the operator identity for an agent name. Called
-// on every authenticated request that carries X-Parley-Operator.
+// AgentTracker records the operator identity for an agent within a tenant.
 // A nil AgentTracker silently skips tracking.
 type AgentTracker interface {
-	UpsertAgent(name, operator string) error
+	UpsertAgent(tenantID, name, operator string) error
 }
 
-// BlobStore stores and retrieves raw blob content. A nil BlobStore disables
-// the blob upload and download endpoints (both return 501).
+// BlobStore stores and retrieves raw blob content scoped to a tenant.
+// A nil BlobStore disables the blob endpoints (both return 501).
 type BlobStore interface {
-	SaveBlob(contentType, filename string, content []byte) (id string, err error)
-	LoadBlob(id string) (content []byte, contentType, filename string, err error)
+	SaveBlob(tenantID, contentType, filename string, content []byte) (id string, err error)
+	LoadBlob(tenantID, id string) (content []byte, contentType, filename string, err error)
 }
 
 // Options configures optional server features.
 type Options struct {
-	// Keys enables API key authentication. Nil = no auth (all requests allowed).
-	Keys KeyValidator
-	// Describer resolves a key to its agent name for GET /me. Nil = endpoint
-	// returns a static fallback.
+	Keys      KeyValidator
 	Describer KeyDescriber
-	// Tracker records the agent→operator mapping. Nil = not tracked.
-	Tracker AgentTracker
-	// Blobs enables POST /blobs and GET /blobs/{id}. Nil = endpoints disabled.
-	Blobs BlobStore
+	Tracker   AgentTracker
+	Blobs     BlobStore
 }
 
-// Hub holds the in-memory state: every post seen so far plus the set of
-// active subscribers. Concurrent access is serialised by mu.
+// -- Context keys --
+
+type ctxAgentKey struct{}
+type ctxTenantKey struct{}
+
+func agentFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxAgentKey{}).(string)
+	return v
+}
+
+func tenantFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxTenantKey{}).(string)
+	return v
+}
+
+// resolveAgent returns the key-derived agent from context; falls back to the
+// X-Parley-Agent header only in no-auth dev mode.
+func resolveAgent(ctx context.Context, header string) string {
+	if v := agentFromCtx(ctx); v != "" {
+		return v
+	}
+	return strings.TrimSpace(header)
+}
+
+// -- Hub (per-tenant in-memory board) --
+
+// Hub holds the in-memory state for one tenant: every post seen so far plus
+// the set of active subscribers. Concurrent access is serialised by mu.
 type Hub struct {
+	tenantID    string
 	mu          sync.Mutex
 	persist     Persister
 	posts       []protocol.Post
@@ -83,8 +101,9 @@ type Hub struct {
 	subscribers map[*subscriber]struct{}
 }
 
-func newHub(persist Persister, initial []protocol.Post) *Hub {
+func newHub(tenantID string, persist Persister, initial []protocol.Post) *Hub {
 	h := &Hub{
+		tenantID:    tenantID,
 		persist:     persist,
 		postsByID:   make(map[string]protocol.Post, len(initial)),
 		subscribers: make(map[*subscriber]struct{}),
@@ -104,8 +123,6 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// ensureAgent returns a copy of a with name appended to Agents, unless the
-// audience already covers name (All=true or name already listed).
 func ensureAgent(a protocol.Audience, name string) protocol.Audience {
 	if a.All || name == "" {
 		return a
@@ -129,10 +146,8 @@ func eventForPost(p protocol.Post) protocol.Event {
 	return protocol.Event{Type: t, Post: p}
 }
 
-// Publish stores p and fans it out to matching subscribers. ID and Timestamp
-// are populated server-side and returned to the caller. Persistence runs
-// under the hub lock before the post is exposed in memory, so a write
-// failure leaves both layers consistent (post visible nowhere).
+// Publish stores p in this tenant's hub and fans it out to matching
+// subscribers. ID and Timestamp are populated server-side.
 func (h *Hub) Publish(p protocol.Post) (protocol.Post, error) {
 	h.mu.Lock()
 	if p.ID == "" {
@@ -141,6 +156,7 @@ func (h *Hub) Publish(p protocol.Post) (protocol.Post, error) {
 	if p.Timestamp.IsZero() {
 		p.Timestamp = time.Now().UTC()
 	}
+	p.TenantID = h.tenantID
 	if err := h.persist.Save(p); err != nil {
 		h.mu.Unlock()
 		return p, err
@@ -157,7 +173,6 @@ func (h *Hub) Publish(p protocol.Post) (protocol.Post, error) {
 	}
 	h.mu.Unlock()
 
-	// Logs happen after the lock release so log I/O can't serialise hub access.
 	log.Printf("[%s] id=%s author=%s audience=%s parent=%s title=%q len=%d content=%q",
 		evt.Type, p.ID, p.Author, p.Audience.String(),
 		dashIfEmpty(p.ParentID), contentPreview(p.Title),
@@ -185,9 +200,6 @@ func (h *Hub) GetPost(id string) (protocol.Post, bool) {
 	return p, ok
 }
 
-// Visible returns all stored posts whose audience includes agent, optionally
-// filtered to those published *strictly after* since. Returned in publish
-// order.
 func (h *Hub) Visible(agent string, since time.Time) []protocol.Post {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -204,8 +216,6 @@ func (h *Hub) Visible(agent string, since time.Time) []protocol.Post {
 	return out
 }
 
-// Thread returns the post with id and all direct replies to it, if agent
-// is allowed to see the post.
 func (h *Hub) Thread(id, agent string) (protocol.Post, []protocol.Post, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -222,14 +232,6 @@ func (h *Hub) Thread(id, agent string) (protocol.Post, []protocol.Post, bool) {
 	return p, replies, true
 }
 
-// Subscribe registers a new subscriber for agent and returns:
-//   - a snapshot of stored posts visible to agent published *strictly after*
-//     since (or all visible posts when since is the zero time);
-//   - a receive-only channel that future matching events will be sent on;
-//   - a cancel func the caller must invoke when done.
-//
-// Snapshot and subscription are taken atomically under the hub lock so no
-// event is dropped or duplicated across the boundary.
 func (h *Hub) Subscribe(agent string, since time.Time) (snapshot []protocol.Event, events <-chan protocol.Event, cancel func()) {
 	sub := &subscriber{
 		agent: agent,
@@ -248,14 +250,14 @@ func (h *Hub) Subscribe(agent string, since time.Time) (snapshot []protocol.Even
 	h.subscribers[sub] = struct{}{}
 	n := len(h.subscribers)
 	h.mu.Unlock()
-	log.Printf("[subscribe] agent=%s snapshot=%d subscribers=%d since=%s",
-		agent, len(snapshot), n, sinceLog(since))
+	log.Printf("[subscribe] tenant=%s agent=%s snapshot=%d subscribers=%d since=%s",
+		h.tenantID, agent, len(snapshot), n, sinceLog(since))
 	cancel = func() {
 		h.mu.Lock()
 		delete(h.subscribers, sub)
 		n := len(h.subscribers)
 		h.mu.Unlock()
-		log.Printf("[unsubscribe] agent=%s subscribers=%d", sub.agent, n)
+		log.Printf("[unsubscribe] tenant=%s agent=%s subscribers=%d", h.tenantID, sub.agent, n)
 	}
 	return snapshot, sub.ch, cancel
 }
@@ -267,8 +269,12 @@ func sinceLog(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
+// -- Server --
+
 type Server struct {
-	hub          *Hub
+	mu           sync.RWMutex
+	hubs         map[string]*Hub // tenant_id → hub
+	persist      Persister
 	keyValidator KeyValidator
 	keyDescriber KeyDescriber
 	agentTracker AgentTracker
@@ -276,10 +282,15 @@ type Server struct {
 }
 
 // New constructs a server backed by persist for durability, seeded with
-// initial as the post history to expose immediately on startup. Optional
-// opts configure API key authentication, agent tracking, and blob storage.
-func New(persist Persister, initial []protocol.Post, opts ...Options) *Server {
-	s := &Server{hub: newHub(persist, initial)}
+// initialByTenant as the per-tenant post histories.
+func New(persist Persister, initialByTenant map[string][]protocol.Post, opts ...Options) *Server {
+	s := &Server{
+		hubs:    make(map[string]*Hub),
+		persist: persist,
+	}
+	for tenantID, posts := range initialByTenant {
+		s.hubs[tenantID] = newHub(tenantID, persist, posts)
+	}
 	if len(opts) > 0 {
 		s.keyValidator = opts[0].Keys
 		s.keyDescriber = opts[0].Describer
@@ -289,21 +300,37 @@ func New(persist Persister, initial []protocol.Post, opts ...Options) *Server {
 	return s
 }
 
+// hubFor returns the hub for the given tenant, creating it if it does not
+// exist yet (happens when the first post for a new tenant arrives at runtime).
+func (s *Server) hubFor(tenantID string) *Hub {
+	s.mu.RLock()
+	h := s.hubs[tenantID]
+	s.mu.RUnlock()
+	if h != nil {
+		return h
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if h = s.hubs[tenantID]; h != nil {
+		return h
+	}
+	h = newHub(tenantID, s.persist, nil)
+	s.hubs[tenantID] = h
+	return h
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Raw handlers: SSE, health, and blobs stay outside Huma to preserve their
-	// streaming/binary behaviour. Auth middleware below still covers these paths.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("POST /blobs", s.handleUploadBlob)
 	mux.HandleFunc("GET /blobs/{id}", s.handleDownloadBlob)
 
 	cfg := huma.DefaultConfig("Parley API", "0.1.0")
-	cfg.DocsPath = "" // we register /docs ourselves to add persistAuthorization
+	cfg.DocsPath = ""
 	api := humago.New(mux, cfg)
 
-	// Swagger UI with persistAuthorization so the key survives page reloads.
 	mux.HandleFunc("GET /docs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(swaggerUIHTML)
@@ -375,8 +402,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware validates the Bearer token on every request except discovery
-// and health endpoints.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
@@ -396,12 +421,20 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "invalid or revoked API key", http.StatusUnauthorized)
 			return
 		}
+		if s.keyDescriber != nil {
+			tenantID, agent, ok := s.keyDescriber.AgentForKey(key)
+			if !ok || tenantID == "" || agent == "" {
+				http.Error(w, "API key has no associated tenant/agent", http.StatusInternalServerError)
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxTenantKey{}, tenantID)
+			ctx = context.WithValue(ctx, ctxAgentKey{}, agent)
+			r = r.WithContext(ctx)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// bearerToken extracts the raw key from Authorization: Bearer <key> or
-// the X-Parley-Key header (fallback for clients that cannot set Authorization).
 func bearerToken(r *http.Request) string {
 	if v := r.Header.Get("Authorization"); v != "" {
 		if rest, ok := strings.CutPrefix(v, "Bearer "); ok {
@@ -411,9 +444,7 @@ func bearerToken(r *http.Request) string {
 	return r.Header.Get("X-Parley-Key")
 }
 
-// trackOperator records the agent→operator mapping. Failures are logged but
-// do not abort the request.
-func (s *Server) trackOperator(agent, operator string) {
+func (s *Server) trackOperator(tenantID, agent, operator string) {
 	if s.agentTracker == nil {
 		return
 	}
@@ -421,14 +452,11 @@ func (s *Server) trackOperator(agent, operator string) {
 	if op == "" {
 		return
 	}
-	if err := s.agentTracker.UpsertAgent(agent, op); err != nil {
-		log.Printf("parleyd: track operator agent=%s: %v", agent, err)
+	if err := s.agentTracker.UpsertAgent(tenantID, agent, op); err != nil {
+		log.Printf("parleyd: track operator tenant=%s agent=%s: %v", tenantID, agent, err)
 	}
 }
 
-// accessLog wraps the next handler and emits one log line per request once
-// the handler returns. Skipped for /healthz so liveness probes don't drown
-// the real events. For /events the duration is the connection lifetime.
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
@@ -438,16 +466,14 @@ func accessLog(next http.Handler) http.Handler {
 		start := time.Now()
 		lw := &loggingWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(lw, r)
-		log.Printf("[http] %s %s agent=%s operator=%s status=%d dur=%s",
+		log.Printf("[http] %s %s tenant=%s agent=%s status=%d dur=%s",
 			r.Method, r.URL.Path,
-			dashIfEmpty(r.Header.Get("X-Parley-Agent")),
-			dashIfEmpty(r.Header.Get("X-Parley-Operator")),
+			dashIfEmpty(tenantFromCtx(r.Context())),
+			dashIfEmpty(agentFromCtx(r.Context())),
 			lw.status, time.Since(start).Round(time.Millisecond))
 	})
 }
 
-// loggingWriter records the response status for the access log. Flush is
-// forwarded so SSE handlers keep streaming through this wrapper.
 type loggingWriter struct {
 	http.ResponseWriter
 	status int
@@ -487,12 +513,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-func (s *Server) handleCreatePost(_ context.Context, input *CreatePostInput) (*CreatePostOutput, error) {
-	agent := strings.TrimSpace(input.Agent)
+func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (*CreatePostOutput, error) {
+	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("X-Parley-Agent must not be empty")
+		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
 	}
-	s.trackOperator(agent, input.Operator)
+	tenantID := tenantFromCtx(ctx)
+	s.trackOperator(tenantID, agent, input.Operator)
+
+	hub := s.hubFor(tenantID)
 
 	ptrStr := func(p *string) string {
 		if p == nil {
@@ -514,7 +543,7 @@ func (s *Server) handleCreatePost(_ context.Context, input *CreatePostInput) (*C
 		if strings.TrimSpace(ptrStr(input.Body.Title)) != "" {
 			return nil, huma.Error400BadRequest("replies cannot have a title")
 		}
-		parent, ok := s.hub.GetPost(parentID)
+		parent, ok := hub.GetPost(parentID)
 		if !ok {
 			return nil, huma.Error404NotFound("parent post not found")
 		}
@@ -533,7 +562,7 @@ func (s *Server) handleCreatePost(_ context.Context, input *CreatePostInput) (*C
 	}
 	audience = ensureAgent(audience, agent)
 
-	stored, err := s.hub.Publish(protocol.Post{
+	stored, err := hub.Publish(protocol.Post{
 		Author:   agent,
 		Audience: audience,
 		Title:    title,
@@ -548,12 +577,13 @@ func (s *Server) handleCreatePost(_ context.Context, input *CreatePostInput) (*C
 	return &CreatePostOutput{Body: stored}, nil
 }
 
-func (s *Server) handleListPosts(_ context.Context, input *ListPostsInput) (*ListPostsOutput, error) {
-	agent := strings.TrimSpace(input.Agent)
+func (s *Server) handleListPosts(ctx context.Context, input *ListPostsInput) (*ListPostsOutput, error) {
+	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("X-Parley-Agent must not be empty")
+		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
 	}
-	s.trackOperator(agent, input.Operator)
+	tenantID := tenantFromCtx(ctx)
+	s.trackOperator(tenantID, agent, input.Operator)
 
 	var since time.Time
 	if input.Since != "" {
@@ -563,43 +593,41 @@ func (s *Server) handleListPosts(_ context.Context, input *ListPostsInput) (*Lis
 		}
 		since = t
 	}
-	return &ListPostsOutput{Body: s.hub.Visible(agent, since)}, nil
+	return &ListPostsOutput{Body: s.hubFor(tenantID).Visible(agent, since)}, nil
 }
 
-func (s *Server) handleGetPost(_ context.Context, input *GetPostInput) (*GetPostOutput, error) {
-	agent := strings.TrimSpace(input.Agent)
+func (s *Server) handleGetPost(ctx context.Context, input *GetPostInput) (*GetPostOutput, error) {
+	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("X-Parley-Agent must not be empty")
+		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
 	}
-	s.trackOperator(agent, input.Operator)
+	tenantID := tenantFromCtx(ctx)
+	s.trackOperator(tenantID, agent, input.Operator)
 
-	post, replies, ok := s.hub.Thread(input.ID, agent)
+	post, replies, ok := s.hubFor(tenantID).Thread(input.ID, agent)
 	if !ok {
 		return nil, huma.Error404NotFound("post not found")
 	}
 	return &GetPostOutput{Body: protocol.Thread{Post: post, Replies: replies}}, nil
 }
 
-func (s *Server) handleGetMe(_ context.Context, input *MeInput) (*MeOutput, error) {
-	key := strings.TrimSpace(input.RawKey)
-	if key == "" {
-		key = strings.TrimSpace(strings.TrimPrefix(input.Authorization, "Bearer "))
+func (s *Server) handleGetMe(ctx context.Context, _ *MeInput) (*MeOutput, error) {
+	agent := agentFromCtx(ctx)
+	tenant := tenantFromCtx(ctx)
+	if agent == "" {
+		agent = "unknown"
 	}
-	if s.keyDescriber != nil {
-		if desc, ok := s.keyDescriber.DescriptionForKey(key); ok {
-			return &MeOutput{Body: MeBody{Agent: desc}}, nil
-		}
-	}
-	return &MeOutput{Body: MeBody{Agent: "WebUI"}}, nil
+	return &MeOutput{Body: MeBody{Agent: agent, TenantID: tenant}}, nil
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	agent := strings.TrimSpace(r.Header.Get("X-Parley-Agent"))
+	agent := resolveAgent(r.Context(), r.Header.Get("X-Parley-Agent"))
 	if agent == "" {
-		http.Error(w, "missing X-Parley-Agent header", http.StatusBadRequest)
+		http.Error(w, "agent identity required: authenticate with a valid API key", http.StatusBadRequest)
 		return
 	}
-	s.trackOperator(agent, r.Header.Get("X-Parley-Operator"))
+	tenantID := tenantFromCtx(r.Context())
+	s.trackOperator(tenantID, agent, r.Header.Get("X-Parley-Operator"))
 
 	var since time.Time
 	if v := r.URL.Query().Get("since"); v != "" {
@@ -621,7 +649,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	snapshot, events, cancel := s.hub.Subscribe(agent, since)
+	snapshot, events, cancel := s.hubFor(tenantID).Subscribe(agent, since)
 	defer cancel()
 
 	writeEvent := func(evt protocol.Event) bool {
@@ -671,6 +699,11 @@ func (s *Server) handleUploadBlob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "blob storage not configured", http.StatusNotImplemented)
 		return
 	}
+	tenantID := tenantFromCtx(r.Context())
+	if tenantID == "" {
+		http.Error(w, "tenant identity required", http.StatusBadRequest)
+		return
+	}
 	ct := r.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "application/octet-stream"
@@ -692,13 +725,13 @@ func (s *Server) handleUploadBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := s.blobStore.SaveBlob(ct, filename, content)
+	id, err := s.blobStore.SaveBlob(tenantID, ct, filename, content)
 	if err != nil {
 		log.Printf("parleyd: save blob: %v", err)
 		http.Error(w, "save blob: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Printf("[blob] upload id=%s size=%d content_type=%s filename=%q", id, len(content), ct, filename)
+	log.Printf("[blob] upload tenant=%s id=%s size=%d content_type=%s filename=%q", tenantID, id, len(content), ct, filename)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -715,8 +748,9 @@ func (s *Server) handleDownloadBlob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "blob storage not configured", http.StatusNotImplemented)
 		return
 	}
+	tenantID := tenantFromCtx(r.Context())
 	id := r.PathValue("id")
-	content, ct, filename, err := s.blobStore.LoadBlob(id)
+	content, ct, filename, err := s.blobStore.LoadBlob(tenantID, id)
 	if err != nil {
 		if err.Error() == "blob not found" {
 			http.Error(w, "blob not found", http.StatusNotFound)
@@ -737,8 +771,6 @@ func (s *Server) handleDownloadBlob(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
-// swaggerUIHTML is served at /docs. persistAuthorization keeps the Bearer
-// token across page reloads so manual testing doesn't require re-entering it.
 var swaggerUIHTML = []byte(`<!doctype html>
 <html lang="en">
   <head>

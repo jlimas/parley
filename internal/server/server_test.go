@@ -111,7 +111,7 @@ func TestEnsureAgentDoesNotMutateInput(t *testing.T) {
 
 func TestPublishAssignsIDAndTimestamp(t *testing.T) {
 	persist := &mockPersister{}
-	h := newHub(persist, nil)
+	h := newHub("test", persist, nil)
 	before := time.Now().UTC()
 	got, err := h.Publish(protocol.Post{
 		Author:   "alice",
@@ -136,7 +136,7 @@ func TestPublishPersistsBeforeAppend(t *testing.T) {
 	// A failing persister must leave both layers consistent: nothing
 	// visible in memory, nothing emitted to subscribers.
 	persist := &mockPersister{fail: errors.New("disk full")}
-	h := newHub(persist, nil)
+	h := newHub("test", persist, nil)
 	_, err := h.Publish(protocol.Post{
 		Author:   "alice",
 		Audience: protocol.Audience{All: true},
@@ -156,7 +156,7 @@ func TestNewHubReplaysInitial(t *testing.T) {
 		{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Content: "broadcast", Timestamp: t0},
 		{ID: "p2", Author: "alice", Audience: protocol.Audience{Agents: []string{"alice", "bob"}}, Content: "dm", Timestamp: t0.Add(time.Second)},
 	}
-	h := newHub(&mockPersister{}, initial)
+	h := newHub("test", &mockPersister{}, initial)
 
 	if _, ok := h.GetPost("p1"); !ok {
 		t.Error("GetPost(p1) lost across replay")
@@ -182,7 +182,7 @@ func TestVisibleSinceStrictAfter(t *testing.T) {
 		{ID: "a", Author: "alice", Audience: protocol.Audience{All: true}, Content: "first", Timestamp: t0},
 		{ID: "b", Author: "alice", Audience: protocol.Audience{All: true}, Content: "second", Timestamp: t0.Add(time.Second)},
 	}
-	h := newHub(&mockPersister{}, initial)
+	h := newHub("test", &mockPersister{}, initial)
 
 	// since == a.Timestamp must exclude a (strictly after).
 	got := h.Visible("anyone", t0)
@@ -206,7 +206,7 @@ func TestThread(t *testing.T) {
 		{ID: "r2", ParentID: "p1", Author: "alice", Audience: dm, Content: "reply 2", Timestamp: t0.Add(2 * time.Second)},
 		{ID: "p2", Author: "carol", Audience: protocol.Audience{All: true}, Content: "elsewhere", Timestamp: t0.Add(3 * time.Second)},
 	}
-	h := newHub(&mockPersister{}, initial)
+	h := newHub("test", &mockPersister{}, initial)
 
 	post, replies, ok := h.Thread("p1", "alice")
 	if !ok {
@@ -234,7 +234,7 @@ func TestSubscribeSnapshotIncludesPriorPosts(t *testing.T) {
 		{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Content: "before", Timestamp: t0},
 		{ID: "p2", Author: "alice", Audience: protocol.Audience{Agents: []string{"bob"}}, Content: "for-bob", Timestamp: t0.Add(time.Second)},
 	}
-	h := newHub(&mockPersister{}, initial)
+	h := newHub("test", &mockPersister{}, initial)
 
 	snap, _, cancel := h.Subscribe("alice", time.Time{})
 	defer cancel()
@@ -244,7 +244,7 @@ func TestSubscribeSnapshotIncludesPriorPosts(t *testing.T) {
 }
 
 func TestSubscribeReceivesEventsAfterRegistration(t *testing.T) {
-	h := newHub(&mockPersister{}, nil)
+	h := newHub("test", &mockPersister{}, nil)
 	_, events, cancel := h.Subscribe("alice", time.Time{})
 	defer cancel()
 
@@ -274,7 +274,7 @@ func TestSubscribeRepliesGetReplyType(t *testing.T) {
 	initial := []protocol.Post{
 		{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Content: "topic", Timestamp: t0},
 	}
-	h := newHub(&mockPersister{}, initial)
+	h := newHub("test", &mockPersister{}, initial)
 	_, events, cancel := h.Subscribe("alice", t0)
 	defer cancel()
 
@@ -326,7 +326,7 @@ func TestHandlePostTitleRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := New(&mockPersister{}, nil)
+			srv := New(&mockPersister{}, map[string][]protocol.Post(nil))
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 
@@ -352,8 +352,8 @@ func TestHandlePostTitleRules(t *testing.T) {
 
 func TestHandlePostReplyRejectsTitle(t *testing.T) {
 	t0 := time.Unix(1000, 0).UTC()
-	srv := New(&mockPersister{}, []protocol.Post{
-		{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Title: "topic", Timestamp: t0},
+	srv := New(&mockPersister{}, map[string][]protocol.Post{
+		"": {{ID: "p1", Author: "alice", Audience: protocol.Audience{All: true}, Title: "topic", Timestamp: t0}},
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -377,8 +377,110 @@ func TestHandlePostReplyRejectsTitle(t *testing.T) {
 	}
 }
 
+// mockKeyStore implements KeyValidator, KeyDescriber, and AgentTracker for tests.
+// keys maps plaintext key → (tenantID, agentName).
+type mockKeyStore struct {
+	keys map[string][2]string
+}
+
+func (m *mockKeyStore) ValidateKey(key string) bool {
+	_, ok := m.keys[key]
+	return ok
+}
+
+func (m *mockKeyStore) AgentForKey(key string) (tenantID, agent string, ok bool) {
+	pair, found := m.keys[key]
+	if !found {
+		return "", "", false
+	}
+	return pair[0], pair[1], true
+}
+
+func (m *mockKeyStore) UpsertAgent(_, _, _ string) error { return nil }
+
+func TestAgentDerivedFromKey(t *testing.T) {
+	ks := &mockKeyStore{keys: map[string][2]string{
+		"prl_alice": {"t1", "alice"},
+		"prl_bob":   {"t1", "bob"},
+	}}
+	srv := New(&mockPersister{}, nil, Options{Keys: ks, Describer: ks, Tracker: ks})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Post as alice using her key — no X-Parley-Agent needed.
+	body, _ := json.Marshal(map[string]any{
+		"audience": map[string]any{"all": true},
+		"title":    "hello from alice",
+	})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/posts", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer prl_alice")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /posts status=%d body=%q", resp.StatusCode, b)
+	}
+	var p protocol.Post
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if p.Author != "alice" {
+		t.Errorf("Author = %q, want alice", p.Author)
+	}
+
+	// X-Parley-Agent claiming a different name is ignored in auth mode.
+	body2, _ := json.Marshal(map[string]any{
+		"audience": map[string]any{"all": true},
+		"title":    "bob lying about identity",
+	})
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/posts", bytes.NewReader(body2))
+	req2.Header.Set("Authorization", "Bearer prl_alice")
+	req2.Header.Set("X-Parley-Agent", "eve") // should be ignored
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp2.Body.Close()
+	var p2 protocol.Post
+	if err := json.NewDecoder(resp2.Body).Decode(&p2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if p2.Author != "alice" {
+		t.Errorf("X-Parley-Agent override not ignored: Author = %q, want alice", p2.Author)
+	}
+}
+
+func TestGetMeReturnsKeyBoundAgent(t *testing.T) {
+	ks := &mockKeyStore{keys: map[string][2]string{"prl_carol": {"t1", "carol"}}}
+	srv := New(&mockPersister{}, nil, Options{Keys: ks, Describer: ks})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/me", nil)
+	req.Header.Set("Authorization", "Bearer prl_carol")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Agent != "carol" {
+		t.Errorf("GET /me agent = %q, want carol", body.Agent)
+	}
+}
+
 func TestSpecEndpoint(t *testing.T) {
-	srv := New(&mockPersister{}, nil)
+	srv := New(&mockPersister{}, map[string][]protocol.Post(nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -408,7 +510,7 @@ func TestPublishSubscribeNoLossNoDuplicate(t *testing.T) {
 	// either in the new subscriber's snapshot or on its channel, exactly
 	// once. Race subscribe against in-flight publishers and verify the
 	// total reconciles.
-	h := newHub(&mockPersister{}, nil)
+	h := newHub("test", &mockPersister{}, nil)
 	const workers = 4
 	const perWorker = 10 // 40 total — well under the 64-event channel buffer
 	expected := workers * perWorker
