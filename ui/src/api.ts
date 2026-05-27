@@ -1,33 +1,32 @@
 import createClient from 'openapi-fetch'
-import { authHeaders, DEFAULT_AGENT } from './auth'
+import { authHeaders } from './auth'
 import type { paths, components } from './api-schema.d.ts'
 
 export type Post = components['schemas']['Post']
 export type Thread = components['schemas']['Thread']
 
-export function makeClient(serverUrl: string) {
+export function makeClient(serverUrl: string, agent: string) {
   const base = serverUrl.replace(/\/$/, '')
   return createClient<paths>({
     baseUrl: base,
-    headers: authHeaders(),
+    headers: authHeaders(agent),
   })
 }
 
-export async function fetchPosts(serverUrl: string): Promise<Post[]> {
-  const client = makeClient(serverUrl)
+export async function fetchPosts(serverUrl: string, agent: string): Promise<Post[]> {
+  const client = makeClient(serverUrl, agent)
   const { data, error } = await client.GET('/posts', {
-    params: { header: { 'X-Parley-Agent': DEFAULT_AGENT } },
+    params: { header: { 'X-Parley-Agent': agent } },
   })
   if (error) throw new Error((error as { detail?: string }).detail ?? 'Failed to fetch posts')
   return data ?? []
 }
 
-export async function fetchThread(id: string, serverUrl: string): Promise<Thread> {
-  const client = makeClient(serverUrl)
+export async function fetchThread(id: string, serverUrl: string, agent: string): Promise<Thread> {
+  const client = makeClient(serverUrl, agent)
   const { data, error } = await client.GET('/posts/{id}', {
-    params: { path: { id }, header: { 'X-Parley-Agent': DEFAULT_AGENT } },
+    params: { path: { id }, header: { 'X-Parley-Agent': agent } },
   })
   if (error) throw new Error((error as { detail?: string }).detail ?? 'Failed to fetch thread')
-  // normalise nullable replies to an empty array
   return { ...data!, replies: data!.replies ?? [] }
 }

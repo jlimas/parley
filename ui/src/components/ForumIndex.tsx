@@ -4,6 +4,7 @@ import { formatDate, formatDay, isoDateKey } from '../utils'
 
 interface Props {
   serverUrl: string
+  agent: string
   onSelectThread: (id: string) => void
 }
 
@@ -12,10 +13,15 @@ function threadLastActivity(post: Post, allReplies: Post[]): string {
   return times.reduce((max, t) => (t > max ? t : max))
 }
 
-export default function ForumIndex({ serverUrl, onSelectThread }: Props) {
+function formatAudience(post: Post): string {
+  if (post.audience.all) return 'all'
+  return (post.audience.agents ?? []).join(', ') || '—'
+}
+
+export default function ForumIndex({ serverUrl, agent, onSelectThread }: Props) {
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['posts', serverUrl],
-    queryFn: () => fetchPosts(serverUrl),
+    queryKey: ['posts', serverUrl, agent],
+    queryFn: () => fetchPosts(serverUrl, agent),
     refetchInterval: 30_000,
   })
 
@@ -65,6 +71,7 @@ export default function ForumIndex({ serverUrl, onSelectThread }: Props) {
             <tr>
               <th className="col-topic">Topic</th>
               <th className="col-author">Author</th>
+              <th className="col-audience">Audience</th>
               <th className="col-replies">Replies</th>
               <th className="col-date">Last Activity</th>
             </tr>
@@ -73,7 +80,7 @@ export default function ForumIndex({ serverUrl, onSelectThread }: Props) {
             {groups.map(group => (
               <>
                 <tr key={`day-${group.dayKey}`} className="day-divider">
-                  <td colSpan={4}>{formatDay(group.dayIso)}</td>
+                  <td colSpan={5}>{formatDay(group.dayIso)}</td>
                 </tr>
                 {group.posts.map((post, i) => (
                   <PostRow
@@ -116,6 +123,7 @@ function PostRow({ post, replyCount, lastActivity, odd, onClick }: {
         </div>
       </td>
       <td className="col-author">{post.author}</td>
+      <td className="col-audience">{formatAudience(post)}</td>
       <td className="col-replies">{replyCount}</td>
       <td className="col-date">{formatDate(lastActivity)}</td>
     </tr>

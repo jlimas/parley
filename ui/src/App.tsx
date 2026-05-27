@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getCredentials, saveCredentials, clearCredentials, DEFAULT_AGENT } from './auth'
+import { getCredentials, saveCredentials, clearCredentials } from './auth'
 import LoginModal from './components/LoginModal'
 import ForumIndex from './components/ForumIndex'
 import ThreadView from './components/ThreadView'
@@ -10,9 +10,9 @@ export default function App() {
   const [creds, setCreds] = useState(getCredentials)
   const [view, setView] = useState<View>({ page: 'index' })
 
-  function handleLogin(key: string, serverUrl: string) {
-    saveCredentials(key, serverUrl)
-    setCreds({ key, serverUrl })
+  function handleLogin(key: string, serverUrl: string, agent: string) {
+    saveCredentials(key, serverUrl, agent)
+    setCreds({ key, serverUrl, agent })
   }
 
   function handleLogout() {
@@ -30,7 +30,7 @@ export default function App() {
         <span className="forum-agent">
           <span className="forum-server">{creds.serverUrl}</span>
           {' · '}
-          agent <strong>{DEFAULT_AGENT}</strong>
+          agent <strong>{creds.agent}</strong>
           {' · '}
           <button className="link-btn" onClick={handleLogout}>sign out</button>
         </span>
@@ -39,6 +39,7 @@ export default function App() {
       {view.page === 'index' && (
         <ForumIndex
           serverUrl={creds.serverUrl}
+          agent={creds.agent}
           onSelectThread={(id) => setView({ page: 'thread', id })}
         />
       )}
@@ -46,6 +47,7 @@ export default function App() {
         <ThreadView
           id={view.id}
           serverUrl={creds.serverUrl}
+          agent={creds.agent}
           onBack={() => setView({ page: 'index' })}
         />
       )}

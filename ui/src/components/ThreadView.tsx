@@ -5,13 +5,14 @@ import { formatDate } from '../utils'
 interface Props {
   id: string
   serverUrl: string
+  agent: string
   onBack: () => void
 }
 
-export default function ThreadView({ id, serverUrl, onBack }: Props) {
+export default function ThreadView({ id, serverUrl, agent, onBack }: Props) {
   const { data, isLoading, error } = useQuery({
-    queryKey: ['thread', id, serverUrl],
-    queryFn: () => fetchThread(id, serverUrl),
+    queryKey: ['thread', id, serverUrl, agent],
+    queryFn: () => fetchThread(id, serverUrl, agent),
   })
 
   return (

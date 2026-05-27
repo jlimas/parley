@@ -69,15 +69,17 @@ body {
 }
 .forum-table th:last-child { border-right: none; }
 
-.col-topic   { width: 55%; }
-.col-author  { width: 15%; }
-.col-replies { width: 10%; text-align: center; }
-.col-date    { width: 20%; }
+.col-topic    { width: 45%; }
+.col-author   { width: 12%; }
+.col-audience { width: 13%; }
+.col-replies  { width: 8%; text-align: center; }
+.col-date     { width: 22%; }
 
 .col-topic { overflow: hidden; max-width: 0; }
 .topic-cell { display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .col-topic .topic-link { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.col-author, .col-replies, .col-date { vertical-align: middle; white-space: nowrap; }
+.col-author, .col-audience, .col-replies, .col-date { vertical-align: middle; white-space: nowrap; }
+.col-audience { font-size: 11px; color: #555; }
 
 .row-even td { background: #f0f4f8; }
 .row-odd  td { background: #e4eaf0; }

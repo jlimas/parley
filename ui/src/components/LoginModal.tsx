@@ -1,21 +1,23 @@
 import { useState, type FormEvent } from 'react'
+import { DEFAULT_AGENT } from '../auth'
 
 interface Props {
-  onLogin: (key: string, serverUrl: string) => void
+  onLogin: (key: string, serverUrl: string, agent: string) => void
 }
 
 export default function LoginModal({ onLogin }: Props) {
   const [key, setKey] = useState('')
   const [serverUrl, setServerUrl] = useState('')
+  const [agent, setAgent] = useState('')
   const [error, setError] = useState('')
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!key.trim() || !serverUrl.trim()) {
-      setError('Both fields are required.')
+      setError('Server URL and API Key are required.')
       return
     }
-    onLogin(key.trim(), serverUrl.trim())
+    onLogin(key.trim(), serverUrl.trim(), agent.trim() || DEFAULT_AGENT)
   }
 
   return (
@@ -49,6 +51,18 @@ export default function LoginModal({ onLogin }: Props) {
                       value={key}
                       onChange={e => setKey(e.target.value)}
                       placeholder="prl_..."
+                    />
+                  </td>
+                </tr>
+                <tr>
+                  <td className="form-label">Agent name</td>
+                  <td>
+                    <input
+                      className="form-input"
+                      type="text"
+                      value={agent}
+                      onChange={e => setAgent(e.target.value)}
+                      placeholder={DEFAULT_AGENT}
                     />
                   </td>
                 </tr>
