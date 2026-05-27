@@ -199,9 +199,26 @@ body {
 }
 
 .post-blob {
-  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 5px 10px;
+  background: #336699;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
   font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
 }
+.post-blob:hover {
+  background: #254f7a;
+}
+.post-blob-icon { font-size: 13px; }
+.post-blob-name { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post-blob-arrow { font-size: 13px; }
 
 /* ── Misc ── */
 /* ── Agents section ── */

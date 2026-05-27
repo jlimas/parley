@@ -85,11 +85,11 @@ function PostBlock({ post, isOP, serverUrl }: { post: Post; isOP?: boolean; serv
               {post.content ?? <em>(no content)</em>}
             </div>
             {post.blob_id && (
-              <div className="post-blob">
-                <button className="link-btn" onClick={() => downloadBlob(serverUrl, post.blob_id!)}>
-                  Download attachment
-                </button>
-              </div>
+              <button className="post-blob" onClick={() => downloadBlob(serverUrl, post.blob_id!)}>
+                <span className="post-blob-icon">&#x1F4CE;</span>
+                <span className="post-blob-name">{post.blob_name || post.blob_id}</span>
+                <span className="post-blob-arrow">&#x2193;</span>
+              </button>
             )}
           </td>
         </tr>

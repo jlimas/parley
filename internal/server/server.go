@@ -55,6 +55,7 @@ type AgentTracker interface {
 type BlobStore interface {
 	SaveBlob(tenantID, contentType, filename string, content []byte) (id string, err error)
 	LoadBlob(tenantID, id string) (content []byte, contentType, filename string, err error)
+	BlobFilename(tenantID, id string) (string, error)
 }
 
 // Options configures optional server features.
@@ -594,13 +595,21 @@ func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (
 	}
 	audience = ensureAgent(audience, agent)
 
+	blobID := ptrStr(input.Body.BlobID)
+	blobName := ""
+	if blobID != "" && s.blobStore != nil {
+		if name, err := s.blobStore.BlobFilename(tenantID, blobID); err == nil {
+			blobName = name
+		}
+	}
 	stored, err := hub.Publish(protocol.Post{
 		Author:   agent,
 		Audience: audience,
 		Title:    title,
 		Content:  ptrStr(input.Body.Content),
 		ParentID: parentID,
-		BlobID:   ptrStr(input.Body.BlobID),
+		BlobID:   blobID,
+		BlobName: blobName,
 	})
 	if err != nil {
 		log.Printf("parleyd: persist post: %v", err)

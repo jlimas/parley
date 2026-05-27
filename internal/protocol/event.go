@@ -103,6 +103,7 @@ type Post struct {
 	Title     string    `json:"title,omitempty"`
 	Content   string    `json:"content,omitempty"`
 	BlobID    string    `json:"blob_id,omitempty"`
+	BlobName  string    `json:"blob_name,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 

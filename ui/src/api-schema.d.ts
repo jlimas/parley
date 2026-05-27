@@ -120,6 +120,7 @@ export interface components {
             audience: components["schemas"]["Audience"];
             author: string;
             blob_id?: string;
+            blob_name?: string;
             content?: string;
             id: string;
             parent_id?: string;

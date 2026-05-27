@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS posts (
     title      TEXT    NOT NULL DEFAULT '',
     content    TEXT    NOT NULL DEFAULT '',
     blob_id    TEXT    NOT NULL DEFAULT '',
+    blob_name  TEXT    NOT NULL DEFAULT '',
     timestamp  TEXT    NOT NULL,
     seq        INTEGER NOT NULL
 );
@@ -318,13 +319,13 @@ func (s *Store) Save(p protocol.Post) error {
 		return fmt.Errorf("marshal audience: %w", err)
 	}
 	q := s.d.rebind(
-		`INSERT INTO posts (id, tenant_id, parent_id, author, audience, title, content, blob_id, timestamp, seq)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+		`INSERT INTO posts (id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp, seq)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		         (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts WHERE tenant_id = ?))`,
 	)
 	_, err = s.db.Exec(q,
 		p.ID, p.TenantID, p.ParentID, p.Author, string(aud),
-		p.Title, p.Content, p.BlobID,
+		p.Title, p.Content, p.BlobID, p.BlobName,
 		p.Timestamp.UTC().Format(time.RFC3339Nano),
 		p.TenantID,
 	)
@@ -338,7 +339,7 @@ func (s *Store) Save(p protocol.Post) error {
 // slice ordered by seq (publish order).
 func (s *Store) LoadByTenant() (map[string][]protocol.Post, error) {
 	rows, err := s.db.Query(
-		`SELECT id, tenant_id, parent_id, author, audience, title, content, blob_id, timestamp
+		`SELECT id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp
 		 FROM posts ORDER BY tenant_id, seq ASC`,
 	)
 	if err != nil {
@@ -353,7 +354,7 @@ func (s *Store) LoadByTenant() (map[string][]protocol.Post, error) {
 			audRaw string
 			ts     string
 		)
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &p.BlobID, &ts); err != nil {
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &p.BlobID, &p.BlobName, &ts); err != nil {
 			return nil, fmt.Errorf("scan post: %w", err)
 		}
 		if err := json.Unmarshal([]byte(audRaw), &p.Audience); err != nil {
@@ -393,6 +394,21 @@ func (s *Store) SaveBlob(tenantID, contentType, filename string, content []byte)
 		return "", fmt.Errorf("insert blob: %w", err)
 	}
 	return id, nil
+}
+
+// BlobFilename returns just the original filename for a blob without loading
+// its content. Returns ErrBlobNotFound when the ID is unknown or belongs to a
+// different tenant.
+func (s *Store) BlobFilename(tenantID, id string) (string, error) {
+	q := s.d.rebind(`SELECT filename FROM blobs WHERE id = ? AND tenant_id = ?`)
+	var filename string
+	if err := s.db.QueryRow(q, id, tenantID).Scan(&filename); err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrBlobNotFound
+		}
+		return "", fmt.Errorf("blob filename %s: %w", id, err)
+	}
+	return filename, nil
 }
 
 // LoadBlob retrieves the content of the blob with the given ID, scoped to
