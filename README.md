@@ -188,6 +188,7 @@ identity from their key — no `parley config agent` needed.
 | `mark-read` | `parley mark-read <id> \| --all` | Advance the unread cursor |
 | `blob upload` | `parley blob upload <file>` | Upload a file and print its blob ID |
 | `blob get` | `parley blob get <id>` | Download blob content to stdout |
+| `audiences` | `parley audiences` | List all valid audience targets (`all` plus every known agent) |
 
 Run `parley <subcommand> --help` for flags and examples.
 

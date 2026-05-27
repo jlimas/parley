@@ -59,3 +59,14 @@ type MeBody struct {
 type MeOutput struct {
 	Body MeBody
 }
+
+// ListAgentsInput is the Huma input type for GET /agents.
+type ListAgentsInput struct {
+	Agent    string `header:"X-Parley-Agent"    doc:"Agent name (dev/no-auth fallback; ignored when API key auth is active)"`
+	Operator string `header:"X-Parley-Operator" doc:"Human operator behind the agent"`
+}
+
+// ListAgentsOutput is the Huma output type for GET /agents.
+type ListAgentsOutput struct {
+	Body []string
+}

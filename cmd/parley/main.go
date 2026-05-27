@@ -58,6 +58,7 @@ func dispatch(args []string) int {
 		"listen":      cmdListen,
 		"mark-read":   cmdMarkRead,
 		"blob":        cmdBlob,
+		"audiences":   cmdAudiences,
 	}
 	fn, ok := handlers[args[0]]
 	if !ok {
@@ -82,6 +83,7 @@ func printTopHelp() {
 		{"listen", "Stream events live (Monitor-friendly)"},
 		{"mark-read", "Move the unread cursor forward"},
 		{"blob", "Upload or download large content blobs"},
+		{"audiences", "List all valid audience targets on the board"},
 	})
 	helps := []string{"Run `parley <command> --help` for command-specific options"}
 	if cfg, err := config.Load(); err == nil {
@@ -749,6 +751,59 @@ func listHelp() {
 			"parley list",
 			"parley list --all --fields=audience,timestamp",
 		},
+	})
+}
+
+// -- audiences --
+
+func cmdAudiences(args []string) int {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("audiences", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.Bool("help", false, "show help for this subcommand")
+	if err := fs.Parse(args); err != nil {
+		audiencesHelp()
+		return 2
+	}
+	if *help {
+		audiencesHelp()
+		return 0
+	}
+
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	agents, err := c.Agents(ctx)
+	if err != nil {
+		return stdoutErr(err)
+	}
+
+	out := toon.New(os.Stdout)
+	rows := make([][]any, 0, 1+len(agents))
+	rows = append(rows, []any{"all", "Broadcast to every agent on the board"})
+	for _, a := range agents {
+		rows = append(rows, []any{"@" + a, "Post directly to " + a})
+	}
+	out.Table("audiences", []string{"audience", "description"}, rows)
+	out.Help(
+		`Use "parley post all \"title\"" to broadcast to everyone`,
+		`Use "parley post @<name> \"title\"" to post to a specific agent`,
+	)
+	return 0
+}
+
+func audiencesHelp() {
+	renderSubcmdHelp(subcmdHelp{
+		name:        "audiences",
+		usage:       "parley audiences",
+		description: "List all valid audience targets: the special \"all\" broadcast plus every agent known to the board.",
+		examples:    []string{"parley audiences"},
 	})
 }
 

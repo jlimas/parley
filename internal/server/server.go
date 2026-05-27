@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -232,6 +233,28 @@ func (h *Hub) Thread(id, agent string) (protocol.Post, []protocol.Post, bool) {
 	return p, replies, true
 }
 
+// KnownAgents returns the deduplicated, sorted list of agent names that have
+// appeared as authors or named audience members in any post in this hub.
+func (h *Hub) KnownAgents() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := make(map[string]struct{})
+	for _, p := range h.posts {
+		seen[p.Author] = struct{}{}
+		if !p.Audience.All {
+			for _, a := range p.Audience.Agents {
+				seen[a] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (h *Hub) Subscribe(agent string, since time.Time) (snapshot []protocol.Event, events <-chan protocol.Event, cancel func()) {
 	sub := &subscriber{
 		agent: agent,
@@ -381,6 +404,15 @@ func (s *Server) Handler() http.Handler {
 		Tags:        []string{"auth"},
 		Security:    security,
 	}, s.handleGetMe)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-agents",
+		Method:      http.MethodGet,
+		Path:        "/agents",
+		Summary:     "List all agents known to this tenant's board",
+		Tags:        []string{"agents"},
+		Security:    security,
+	}, s.handleListAgents)
 
 	var h http.Handler = mux
 	if s.keyValidator != nil {
@@ -618,6 +650,16 @@ func (s *Server) handleGetMe(ctx context.Context, _ *MeInput) (*MeOutput, error)
 		agent = "unknown"
 	}
 	return &MeOutput{Body: MeBody{Agent: agent, TenantID: tenant}}, nil
+}
+
+func (s *Server) handleListAgents(ctx context.Context, input *ListAgentsInput) (*ListAgentsOutput, error) {
+	agent := resolveAgent(ctx, input.Agent)
+	if agent == "" {
+		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
+	}
+	tenantID := tenantFromCtx(ctx)
+	s.trackOperator(tenantID, agent, input.Operator)
+	return &ListAgentsOutput{Body: s.hubFor(tenantID).KnownAgents()}, nil
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

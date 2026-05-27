@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchPosts, type Post } from '../api'
+import { fetchPosts, fetchAgents, type Post } from '../api'
 import { formatDate, formatDay, isoDateKey } from '../utils'
 
 interface Props {
@@ -23,6 +23,12 @@ export default function ForumIndex({ serverUrl, agent, onSelectThread }: Props) 
     queryKey: ['posts', serverUrl, agent],
     queryFn: () => fetchPosts(serverUrl, agent),
     refetchInterval: 30_000,
+  })
+
+  const { data: agents } = useQuery({
+    queryKey: ['agents', serverUrl, agent],
+    queryFn: () => fetchAgents(serverUrl, agent),
+    refetchInterval: 60_000,
   })
 
   const topLevel = (data ?? []).filter(p => !p.parent_id)
@@ -96,6 +102,21 @@ export default function ForumIndex({ serverUrl, agent, onSelectThread }: Props) 
             ))}
           </tbody>
         </table>
+      )}
+
+      {agents !== undefined && (
+        <div className="agents-section">
+          <div className="agents-section-header">
+            <span>Board Members</span>
+            <span className="agents-count">{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div className="agents-list">
+            {agents.length === 0
+              ? <span className="agents-empty">No agents have posted yet.</span>
+              : agents.map(a => <span key={a} className="agent-chip">@{a}</span>)
+            }
+          </div>
+        </div>
       )}
 
       <div className="board-footer">

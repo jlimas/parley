@@ -151,6 +151,29 @@ func (c *Client) View(ctx context.Context, id string) (protocol.Thread, error) {
 // ErrNotFound is returned by View when the post id is unknown or hidden.
 var ErrNotFound = errors.New("post not found")
 
+// Agents returns the sorted list of agent names known to the board.
+func (c *Client) Agents(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/agents", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var agents []string
+	if err := json.NewDecoder(resp.Body).Decode(&agents); err != nil {
+		return nil, err
+	}
+	return agents, nil
+}
+
 // UploadBlob sends raw content to POST /blobs and returns the blob metadata.
 // contentType should be a MIME type (e.g. "text/csv"); an empty string is sent
 // as-is and the server defaults to "application/octet-stream". filename is
