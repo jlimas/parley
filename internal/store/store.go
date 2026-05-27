@@ -117,9 +117,8 @@ CREATE TABLE IF NOT EXISTS blobs (
 );
 `
 
-// Open opens the database at dsn, creates the schema if missing, and returns
-// a Store ready for use. No migrations are applied — schema is the source of
-// truth; breaking changes require a fresh database.
+// Open opens the database at dsn, creates the schema if missing, applies
+// additive column migrations, and returns a Store ready for use.
 func Open(dsn string) (*Store, error) {
 	d := detectDialect(dsn)
 	db, err := sql.Open(d.driverName(), dsn)
@@ -131,7 +130,36 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := applyMigrations(db, d); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db, d: d}, nil
+}
+
+// applyMigrations runs additive ALTER TABLE migrations. Each statement is
+// idempotent: Postgres uses ADD COLUMN IF NOT EXISTS; SQLite silently ignores
+// the "duplicate column" error that fires when the column already exists.
+func applyMigrations(db *sql.DB, d dialect) error {
+	addCols := []struct{ table, col, def string }{
+		{"posts", "blob_name", "TEXT NOT NULL DEFAULT ''"},
+	}
+	for _, c := range addCols {
+		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, c.table, c.col, c.def)
+		if _, ok := d.(postgresDialect); ok {
+			stmt = fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, c.table, c.col, c.def)
+		}
+		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
+			return fmt.Errorf("migration add %s.%s: %w", c.table, c.col, err)
+		}
+	}
+	return nil
+}
+
+// isDuplicateColumn returns true for SQLite's "duplicate column name" error,
+// which fires when ADD COLUMN targets a column that already exists.
+func isDuplicateColumn(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "duplicate column name")
 }
 
 func (s *Store) Close() error {
