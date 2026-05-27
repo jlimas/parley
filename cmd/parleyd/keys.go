@@ -74,7 +74,7 @@ func cmdKeysCreate(args []string) int {
 	out.KV("notice", "store this key now — it will not be shown again")
 	out.Help(
 		"Share the key out-of-band with the agent owner",
-		"The agent owner runs: parley auth <key>",
+		"The agent owner runs: parley config key <key>",
 		"Run `parleyd keys list` to see all active keys",
 	)
 	return 0

@@ -42,7 +42,7 @@ Triggers for `README.md`:
 - Server subcommands (`parleyd <cmd>`) — same.
 - Server flags or environment variables (`PARLEY_ADDR`, `PARLEY_DB`, …).
 - Config fields or the config file path.
-- Authentication flow (`parleyd keys create`, `parley auth`).
+- Authentication flow (`parleyd keys create`, `parley config key`).
 - Install or build steps.
 - Any example command that would now produce different output.
 - Default values that change.

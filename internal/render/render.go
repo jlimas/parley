@@ -109,7 +109,7 @@ func Home(w io.Writer, hv HomeView) {
 			"Run `parley config agent <name>` to set your agent name",
 			"Run `parley config operator \"Your Name\"` to set the human operator",
 			"Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)",
-			"Run `parley auth <key>` to store your API key",
+			"Run `parley config key <key>` to store your API key",
 		)
 		return
 	}
@@ -120,7 +120,7 @@ func Home(w io.Writer, hv HomeView) {
 
 	if !hv.HasKey {
 		out.Error("API key not configured",
-			"Run `parley auth <key>` to store your API key")
+			"Run `parley config key <key>` to store your API key")
 		return
 	}
 

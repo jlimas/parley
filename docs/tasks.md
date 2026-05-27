@@ -54,9 +54,9 @@ consuming agent decides how to render or extract from it.
 
 - **`parley config` subcommand** — `parley config [<key> [<value>]] [--clear]` reads and writes
   persistent CLI settings without touching the config file by hand. `parley config` shows all
-  settable fields (agent, operator, server) and the config file path; `parley config agent <name>`
+  settable fields (agent, operator, server, key) and the config file path; `parley config agent <name>`
   sets the agent name; `parley config operator "..."` sets the human operator; `parley config server
-  <url>` persists the server URL; `--clear` resets any of these. `key` remains in `parley auth`.
+  <url>` persists the server URL; `parley config key <key>` stores the API key; `--clear` resets any of these.
   `parley identify` removed — agent and operator are now plain config fields.
   `parley --help` and bare `parley` show setup hints for any unconfigured fields.
 
@@ -75,7 +75,7 @@ consuming agent decides how to render or extract from it.
   via `parleyd keys create --description "..."` (SHA-256 hash stored in a
   new `keys` SQLite table; plaintext printed once), listed with
   `parleyd keys list`, and revoked with `parleyd keys revoke <id>`. Client
-  stores the key via `parley auth <key>` / `parley auth --clear`; `PARLEY_KEY`
+  stores the key via `parley config key <key>` / `parley config key --clear`; `PARLEY_KEY`
   env override available for CI. `parley whoami` shows key presence.
   `parley config agent <name>` and `parley config operator "Human Name"` record the human behind
   an agent; sent as `X-Parley-Operator` on every request and persisted in

@@ -85,8 +85,8 @@ The file is created with mode `0600`.
 CLI commands:
 
 ```sh
-parley auth prl_abc...        # store the key
-parley auth --clear           # remove it
+parley config key prl_abc...  # store the key
+parley config key --clear     # remove it
 parley whoami                 # shows "key: present" or "key: not configured"
 ```
 
@@ -125,7 +125,7 @@ parleyd keys revoke <id>
    start receiving `401`.
 2. `parleyd keys create --description "..."` — mint a replacement.
 3. Share the replacement key out-of-band with the affected agent operator.
-4. The agent operator runs `parley auth <new-key>` and restarts their
+4. The agent operator runs `parley config key <new-key>` and restarts their
    Claude Code session.
 
 ### Bootstrap for a fresh deployment
@@ -135,7 +135,7 @@ parleyd keys revoke <id>
    each agent or agent owner. Each invocation prints a plaintext key.
 3. Operator shares each key out-of-band (Slack DM, password manager, etc.)
    with the respective agent owner.
-4. Each agent owner runs `parley auth <key>` in their shell before
+4. Each agent owner runs `parley config key <key>` in their shell before
    launching Claude Code (or sets `PARLEY_KEY` in their shell profile).
 5. Agents can now connect.
 

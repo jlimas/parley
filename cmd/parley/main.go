@@ -49,7 +49,6 @@ func dispatch(args []string) int {
 	}
 	handlers := map[string]func([]string) int{
 		"whoami":      cmdWhoami,
-		"auth":        cmdAuth,
 		"config":      cmdConfig,
 		"healthcheck": cmdHealthcheck,
 		"post":        cmdPost,
@@ -74,8 +73,7 @@ func printTopHelp() {
 	out.KV("description", description)
 	out.Table("commands", []string{"name", "purpose"}, [][]any{
 		{"whoami", "Show identity, operator, and key status"},
-		{"auth", "Store or clear the API key"},
-		{"config", "Read or write persistent settings (agent, operator, server)"},
+		{"config", "Read or write persistent settings (agent, operator, server, key)"},
 		{"healthcheck", "Validate identity, key, server, and auth"},
 		{"post", "Publish a new top-level post"},
 		{"reply", "Reply to an existing post"},
@@ -154,7 +152,7 @@ func cmdWhoami(args []string) int {
 	if cfg.Key != "" {
 		out.KV("key", "present")
 	} else {
-		out.KV("key", "not configured — run `parley auth <key>`")
+		out.KV("key", "not configured — run `parley config key <key>`")
 	}
 	out.KV("server", cfg.Server)
 	if dir, err := config.Dir(); err == nil {
@@ -175,81 +173,13 @@ func whoamiHelp() {
 	})
 }
 
-// -- auth --
-
-func cmdAuth(args []string) int {
-	args = reorderFlags(args)
-	fs := flag.NewFlagSet("auth", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	clear := fs.Bool("clear", false, "remove the stored API key")
-	help := fs.Bool("help", false, "show help for this subcommand")
-	if err := fs.Parse(args); err != nil {
-		authHelp()
-		return 2
-	}
-	if *help {
-		authHelp()
-		return 0
-	}
-
-	out := toon.New(os.Stdout)
-
-	if *clear {
-		cfg, err := config.Load()
-		if err != nil {
-			return stdoutErr(err)
-		}
-		cfg.Key = ""
-		if err := config.Save(cfg); err != nil {
-			return stdoutErr(err)
-		}
-		out.KV("status", "API key cleared")
-		return 0
-	}
-
-	rest := fs.Args()
-	if len(rest) != 1 {
-		return usageErr("usage: parley auth <key>",
-			"Use `parley auth --clear` to remove the stored key")
-	}
-	key := strings.TrimSpace(rest[0])
-	if key == "" {
-		return usageErr("key must not be empty", "")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return stdoutErr(err)
-	}
-	cfg.Key = key
-	if err := config.Save(cfg); err != nil {
-		return stdoutErr(err)
-	}
-	out.KV("status", "API key saved")
-	out.Help("Run `parley whoami` to verify your identity and key status")
-	return 0
-}
-
-func authHelp() {
-	renderSubcmdHelp(subcmdHelp{
-		name:        "auth",
-		usage:       "parley auth <key> | --clear",
-		description: "Store or remove the API key used to authenticate to parleyd. The key is saved in the per-profile config file (governed by $PARLEY_HOME). Ask your server operator to run `parleyd keys create` to mint a key.",
-		flags: [][2]string{
-			{"--clear", "remove the stored API key"},
-		},
-		examples: []string{
-			"parley auth prl_abc123...",
-			"parley auth --clear",
-		},
-	})
-}
-
 // -- config --
 
 var settableKeys = map[string]bool{
 	"agent":    true,
 	"operator": true,
 	"server":   true,
+	"key":      true,
 }
 
 func cmdConfig(args []string) int {
@@ -301,6 +231,11 @@ func cmdConfigShow() int {
 		serverVal = config.DefaultServer + " (default)"
 	}
 	out.KV("server", serverVal)
+	if cfg.Key != "" {
+		out.KV("key", maskKey(cfg.Key))
+	} else {
+		out.KV("key", "(not set)")
+	}
 	if dir, err := config.Dir(); err == nil {
 		out.KV("config_file", filepath.Join(dir, "config.json"))
 	}
@@ -309,15 +244,23 @@ func cmdConfigShow() int {
 		"Run `parley config operator \"...\"` to set the human operator",
 		"Run `parley config server <url>` to change the server URL",
 		"Run `parley config server --clear` to reset to the default ("+config.DefaultServer+")",
-		"Run `parley auth <key>` to change the API key",
+		"Run `parley config key <key>` to set your API key",
+		"Run `parley config key --clear` to remove the API key",
 	)
 	return 0
+}
+
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "***"
+	}
+	return key[:8] + "***"
 }
 
 func cmdConfigGet(key string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server")
+			"Settable settings: agent, operator, server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -331,6 +274,12 @@ func cmdConfigGet(key string) int {
 		out.KV("operator", cfg.Operator)
 	case "server":
 		out.KV("server", cfg.Server)
+	case "key":
+		if cfg.Key != "" {
+			out.KV("key", maskKey(cfg.Key))
+		} else {
+			out.KV("key", "(not set)")
+		}
 	}
 	return 0
 }
@@ -338,7 +287,7 @@ func cmdConfigGet(key string) int {
 func cmdConfigSet(key, value string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server")
+			"Settable settings: agent, operator, server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -361,6 +310,13 @@ func cmdConfigSet(key, value string) int {
 				fmt.Sprintf("Run `parley config server --clear` to reset to %s", config.DefaultServer))
 		}
 		cfg.Server = value
+	case "key":
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return usageErr("key must not be empty",
+				"Run `parley config key --clear` to remove the stored key")
+		}
+		cfg.Key = value
 	}
 	if err := config.Save(cfg); err != nil {
 		return stdoutErr(err)
@@ -370,7 +326,7 @@ func cmdConfigSet(key, value string) int {
 		out.KV("agent", cfg.Agent)
 		if cfg.Key == "" {
 			out.KV("status", "saved")
-			out.Help("Run `parley auth <key>` to store your API key")
+			out.Help("Run `parley config key <key>` to store your API key")
 			return 0
 		}
 	case "operator":
@@ -384,6 +340,11 @@ func cmdConfigSet(key, value string) int {
 		} else {
 			out.KV("ping", "ok")
 		}
+	case "key":
+		out.KV("key", maskKey(cfg.Key))
+		out.KV("status", "saved")
+		out.Help("Run `parley whoami` to verify your identity and key status")
+		return 0
 	}
 	out.KV("status", "saved")
 	out.Help("Run `parley config` to see all settings")
@@ -393,7 +354,7 @@ func cmdConfigSet(key, value string) int {
 func cmdConfigClear(key string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server")
+			"Settable settings: agent, operator, server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -407,6 +368,8 @@ func cmdConfigClear(key string) int {
 		cfg.Operator = ""
 	case "server":
 		cfg.Server = "" // Load() fills this back to DefaultServer on next read
+	case "key":
+		cfg.Key = ""
 	}
 	if err := config.Save(cfg); err != nil {
 		return stdoutErr(err)
@@ -418,6 +381,8 @@ func cmdConfigClear(key string) int {
 		out.KV("operator", "(cleared)")
 	case "server":
 		out.KV("server", config.DefaultServer)
+	case "key":
+		out.KV("key", "(cleared)")
 	}
 	out.KV("status", "reset to default")
 	out.Help("Run `parley config` to see all settings")
@@ -438,7 +403,7 @@ func cmdConfigReset() int {
 		"Run `parley config agent <name>` to set your agent name",
 		"Run `parley config operator \"Your Name\"` to set the human operator",
 		"Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)",
-		"Run `parley auth <key>` to store your API key",
+		"Run `parley config key <key>` to store your API key",
 	)
 	return 0
 }
@@ -455,9 +420,7 @@ func configHelp() {
 		{"agent", "(none)", "this agent's name, sent on every request (env: PARLEY_AGENT)"},
 		{"operator", "(none)", "human operator behind this agent"},
 		{"server", config.DefaultServer, "broker URL the CLI connects to (env: PARLEY_SERVER)"},
-	})
-	out.Table("managed separately", []string{"key", "managed by"}, [][]any{
-		{"key", "`parley auth` (env: PARLEY_KEY)"},
+		{"key", "(none)", "API key used to authenticate to parleyd (env: PARLEY_KEY)"},
 	})
 	out.Help(
 		"parley config",
@@ -465,6 +428,8 @@ func configHelp() {
 		"parley config operator \"Jorge Limas\"",
 		"parley config server https://parleyd.example.com",
 		"parley config server --clear",
+		"parley config key prl_abc123...",
+		"parley config key --clear",
 		"parley config reset",
 	)
 }
@@ -506,7 +471,7 @@ func cmdHealthcheck(args []string) int {
 		results = append(results, result{"key", "ok", "(present)"})
 	} else {
 		results = append(results, result{"key", "fail", "not configured"})
-		fixes = append(fixes, "Run `parley auth <key>` to store your API key")
+		fixes = append(fixes, "Run `parley config key <key>` to store your API key")
 		fixes = append(fixes, "Run `parleyd keys create --description \"...\"` on the server to mint a key")
 		failures++
 	}
@@ -540,7 +505,7 @@ func cmdHealthcheck(args []string) int {
 		if authErr != nil {
 			results = append(results, result{"auth", "fail", authErr.Error()})
 			fixes = append(fixes, "The API key may be invalid or revoked — ask the server operator to check `parleyd keys list`")
-			fixes = append(fixes, "Run `parley auth <key>` to update your key")
+			fixes = append(fixes, "Run `parley config key <key>` to update your key")
 			failures++
 		} else {
 			results = append(results, result{"auth", "ok", "authenticated"})
@@ -1188,7 +1153,7 @@ func identityRequired() int {
 func keyRequired() int {
 	out := toon.New(os.Stdout)
 	out.Error("API key not configured",
-		"Run `parley auth <key>` to store your key",
+		"Run `parley config key <key>` to store your key",
 		"Ask your server operator to run `parleyd keys create --description \"...\"` to mint a key",
 		"Or set PARLEY_KEY in your environment")
 	return 1

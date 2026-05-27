@@ -460,7 +460,7 @@ Dependencies flow one direction; there are no cycles.
 | `parley config <key> --clear` | Reset a single setting to its default |
 | `parley config reset` | Clear all settings at once (agent, operator, key, server → default) |
 
-`agent`, `operator`, and `server` are settable via `parley config`. `key` is managed by `parley auth` (which handles clearing separately), but `parley config reset` also clears it as part of a full wipe. The `--clear` flag resets a setting to empty (agent, operator) or the built-in default (server).
+`agent`, `operator`, `server`, and `key` are all settable via `parley config`. The `--clear` flag resets a setting to empty (agent, operator, key) or the built-in default (server). `parley config reset` clears all settings at once.
 
 ### Last-seen cursor
 
