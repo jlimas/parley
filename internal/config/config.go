@@ -1,8 +1,8 @@
-// Package config handles persistent CLI configuration: agent identity,
-// server URL, and the last-seen cursor used to compute unread events.
+// Package config handles persistent CLI configuration: API key, server URL,
+// and the last-seen cursor used to compute unread events.
 //
 // Stored at $XDG_CONFIG_HOME/parley/config.json (or the OS equivalent) with
-// PARLEY_AGENT and PARLEY_SERVER env overrides applied by Resolve.
+// PARLEY_SERVER and PARLEY_KEY env overrides applied by Resolve.
 package config
 
 import (
@@ -17,9 +17,7 @@ import (
 const DefaultServer = "http://localhost:8080"
 
 type Config struct {
-	Agent    string    `json:"agent,omitempty"`
-	Operator string    `json:"operator,omitempty"` // human operator behind this agent
-	Key      string    `json:"key,omitempty"`      // API key for authenticating to parleyd
+	Key      string    `json:"key,omitempty"` // API key for authenticating to parleyd
 	Server   string    `json:"server,omitempty"`
 	LastSeen time.Time `json:"last_seen,omitempty"`
 }
@@ -88,14 +86,11 @@ func Save(c Config) error {
 	return os.Rename(tmp, p)
 }
 
-// Resolve loads the config and applies PARLEY_AGENT / PARLEY_SERVER overrides.
+// Resolve loads the config and applies PARLEY_SERVER / PARLEY_KEY overrides.
 func Resolve() (Config, error) {
 	cfg, err := Load()
 	if err != nil {
 		return cfg, err
-	}
-	if v := os.Getenv("PARLEY_AGENT"); v != "" {
-		cfg.Agent = v
 	}
 	if v := os.Getenv("PARLEY_SERVER"); v != "" {
 		cfg.Server = v

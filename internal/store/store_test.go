@@ -238,7 +238,7 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 	s := mustOpen(t, ":memory:")
 	tid := mustCreateTenant(t, s, "acme")
 
-	plaintext, rec, err := s.CreateKey(tid, "alice")
+	plaintext, rec, err := s.CreateKey(tid, "test key")
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -248,8 +248,11 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 	if rec.TenantID != tid {
 		t.Errorf("CreateKey: TenantID = %q, want %q", rec.TenantID, tid)
 	}
-	if rec.Agent != "alice" {
-		t.Errorf("CreateKey: Agent = %q, want alice", rec.Agent)
+	if rec.ClientID == "" {
+		t.Error("CreateKey: ClientID is empty")
+	}
+	if rec.DisplayName == "" {
+		t.Error("CreateKey: DisplayName is empty")
 	}
 	if rec.CreatedAt.IsZero() {
 		t.Error("CreateKey: CreatedAt is zero")
@@ -268,15 +271,18 @@ func TestKeyCreateValidateRevoke(t *testing.T) {
 		t.Error("ValidateKey: invalid key accepted")
 	}
 
-	gotTenant, gotAgent, ok := s.AgentForKey(plaintext)
+	gotTenant, gotClientID, gotName, ok := s.ClientForKey(plaintext)
 	if !ok {
-		t.Fatal("AgentForKey: key not found")
+		t.Fatal("ClientForKey: key not found")
 	}
 	if gotTenant != tid {
-		t.Errorf("AgentForKey: tenantID = %q, want %q", gotTenant, tid)
+		t.Errorf("ClientForKey: tenantID = %q, want %q", gotTenant, tid)
 	}
-	if gotAgent != "alice" {
-		t.Errorf("AgentForKey: agent = %q, want alice", gotAgent)
+	if gotClientID != rec.ClientID {
+		t.Errorf("ClientForKey: clientID = %q, want %q", gotClientID, rec.ClientID)
+	}
+	if gotName != rec.DisplayName {
+		t.Errorf("ClientForKey: displayName = %q, want %q", gotName, rec.DisplayName)
 	}
 
 	found, err := s.RevokeKey(rec.ID)
@@ -303,11 +309,11 @@ func TestKeyListShowsAllStates(t *testing.T) {
 	s := mustOpen(t, ":memory:")
 	tid := mustCreateTenant(t, s, "acme")
 
-	_, rec1, err := s.CreateKey(tid, "alice")
+	_, rec1, err := s.CreateKey(tid, "key for alice")
 	if err != nil {
 		t.Fatalf("CreateKey alice: %v", err)
 	}
-	_, rec2, err := s.CreateKey(tid, "bob")
+	_, rec2, err := s.CreateKey(tid, "key for bob")
 	if err != nil {
 		t.Fatalf("CreateKey bob: %v", err)
 	}
@@ -335,28 +341,30 @@ func TestKeyListShowsAllStates(t *testing.T) {
 	}
 }
 
-func TestUpsertAgentRoundTrip(t *testing.T) {
+func TestRenameClientRoundTrip(t *testing.T) {
 	s := mustOpen(t, ":memory:")
 	tid := mustCreateTenant(t, s, "acme")
 
-	if err := s.UpsertAgent(tid, "alice", "Jorge Limas"); err != nil {
-		t.Fatalf("UpsertAgent insert: %v", err)
-	}
-	if err := s.UpsertAgent(tid, "alice", "Alice Limas"); err != nil {
-		t.Fatalf("UpsertAgent update: %v", err)
-	}
-	if err := s.UpsertAgent(tid, "bob", "Bob Builder"); err != nil {
-		t.Fatalf("UpsertAgent bob: %v", err)
+	_, rec, err := s.CreateKey(tid, "laptop")
+	if err != nil {
+		t.Fatalf("CreateKey: %v", err)
 	}
 
-	var op string
-	err := s.db.QueryRow(
-		`SELECT operator FROM agents WHERE tenant_id = ? AND name = ?`, tid, "alice",
-	).Scan(&op)
-	if err != nil {
-		t.Fatalf("query alice: %v", err)
+	if err := s.RenameClient(tid, rec.ClientID, "hawk"); err != nil {
+		t.Fatalf("RenameClient: %v", err)
 	}
-	if op != "Alice Limas" {
-		t.Errorf("operator for alice = %q, want %q", op, "Alice Limas")
+
+	clients, err := s.ListClients(tid)
+	if err != nil {
+		t.Fatalf("ListClients: %v", err)
+	}
+	if len(clients) != 1 {
+		t.Fatalf("ListClients: got %d clients, want 1", len(clients))
+	}
+	if clients[0].DisplayName != "hawk" {
+		t.Errorf("DisplayName = %q, want hawk", clients[0].DisplayName)
+	}
+	if clients[0].ClientID != rec.ClientID {
+		t.Errorf("ClientID = %q, want %q", clients[0].ClientID, rec.ClientID)
 	}
 }

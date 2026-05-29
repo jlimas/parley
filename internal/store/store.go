@@ -1,9 +1,9 @@
-// Package store persists parley posts, API keys, tenants, and agent identities.
+// Package store persists parley posts, API keys, tenants, and client identities.
 // The broker keeps the in-memory hub as its read path; this package handles
 // durability so a restart does not wipe the board.
 //
-// Every resource (post, key, agent, blob) belongs to a tenant. Queries are
-// always scoped to a tenant_id so boards are fully isolated.
+// Every resource (post, key, blob) belongs to a tenant. Queries are always
+// scoped to a tenant_id so boards are fully isolated.
 package store
 
 import (
@@ -20,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 
+	"github.com/jlimas/parley/internal/names"
 	"github.com/jlimas/parley/internal/protocol"
 )
 
@@ -73,14 +74,18 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 
 CREATE TABLE IF NOT EXISTS keys (
-    id          TEXT PRIMARY KEY,
-    tenant_id   TEXT NOT NULL REFERENCES tenants(id),
-    agent       TEXT NOT NULL,
-    key_hash    TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    revoked_at  TEXT
+    id           TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL REFERENCES tenants(id),
+    agent        TEXT NOT NULL DEFAULT '',
+    key_hash     TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    revoked_at   TEXT,
+    client_id    TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    description  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS keys_hash ON keys(key_hash);
+CREATE INDEX IF NOT EXISTS keys_client ON keys(client_id);
 
 CREATE TABLE IF NOT EXISTS posts (
     id         TEXT    PRIMARY KEY,
@@ -134,6 +139,10 @@ func Open(dsn string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := migrateLegacyClients(db, d); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db, d: d}, nil
 }
 
@@ -143,6 +152,9 @@ func Open(dsn string) (*Store, error) {
 func applyMigrations(db *sql.DB, d dialect) error {
 	addCols := []struct{ table, col, def string }{
 		{"posts", "blob_name", "TEXT NOT NULL DEFAULT ''"},
+		{"keys", "client_id", "TEXT NOT NULL DEFAULT ''"},
+		{"keys", "display_name", "TEXT NOT NULL DEFAULT ''"},
+		{"keys", "description", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range addCols {
 		stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, c.table, c.col, c.def)
@@ -151,6 +163,102 @@ func applyMigrations(db *sql.DB, d dialect) error {
 		}
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migration add %s.%s: %w", c.table, c.col, err)
+		}
+	}
+	return nil
+}
+
+// migrateLegacyClients assigns client_id and display_name to existing keys
+// created before the identity-model simplification. For each legacy key (where
+// client_id is empty) the old agent value becomes the display_name and a new
+// random base-36 ID is generated. Posts authored or addressed under the old
+// agent name are rewritten to use the new client_id.
+func migrateLegacyClients(db *sql.DB, d dialect) error {
+	rows, err := db.Query(`SELECT id, tenant_id, agent FROM keys WHERE client_id = ''`)
+	if err != nil {
+		return fmt.Errorf("migrate clients: query legacy keys: %w", err)
+	}
+	type legacyKey struct{ id, tenantID, agent string }
+	var legacy []legacyKey
+	for rows.Next() {
+		var k legacyKey
+		if err := rows.Scan(&k.id, &k.tenantID, &k.agent); err != nil {
+			rows.Close()
+			return fmt.Errorf("migrate clients: scan key: %w", err)
+		}
+		legacy = append(legacy, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate clients: iterate keys: %w", err)
+	}
+
+	for _, k := range legacy {
+		clientID := names.GenClientID()
+		displayName := k.agent
+		if displayName == "" {
+			displayName = names.Pick()
+		}
+
+		uq := d.rebind(`UPDATE keys SET client_id = ?, display_name = ? WHERE id = ?`)
+		if _, err := db.Exec(uq, clientID, displayName, k.id); err != nil {
+			return fmt.Errorf("migrate clients: update key %s: %w", k.id, err)
+		}
+
+		if k.agent == "" {
+			continue
+		}
+
+		// Rewrite posts.author for this tenant.
+		aq := d.rebind(`UPDATE posts SET author = ? WHERE author = ? AND tenant_id = ?`)
+		if _, err := db.Exec(aq, clientID, k.agent, k.tenantID); err != nil {
+			return fmt.Errorf("migrate clients: rewrite author for %s: %w", k.agent, err)
+		}
+
+		// Rewrite audience JSON entries that name this agent.
+		// We load each post that could contain the old name and rewrite in Go.
+		pq := d.rebind(`SELECT id, audience FROM posts WHERE tenant_id = ? AND audience LIKE ?`)
+		prows, err := db.Query(pq, k.tenantID, "%"+k.agent+"%")
+		if err != nil {
+			return fmt.Errorf("migrate clients: query posts for %s: %w", k.agent, err)
+		}
+		type audRow struct{ id, audience string }
+		var audRows []audRow
+		for prows.Next() {
+			var r audRow
+			if err := prows.Scan(&r.id, &r.audience); err != nil {
+				prows.Close()
+				return fmt.Errorf("migrate clients: scan post audience: %w", err)
+			}
+			audRows = append(audRows, r)
+		}
+		prows.Close()
+		if err := prows.Err(); err != nil {
+			return fmt.Errorf("migrate clients: iterate post audiences: %w", err)
+		}
+		for _, ar := range audRows {
+			var aud protocol.Audience
+			if err := json.Unmarshal([]byte(ar.audience), &aud); err != nil {
+				continue
+			}
+			changed := false
+			for i, a := range aud.Agents {
+				if a == k.agent {
+					aud.Agents[i] = clientID
+					changed = true
+				}
+			}
+			if !changed {
+				continue
+			}
+			updated, err := json.Marshal(aud)
+			if err != nil {
+				continue
+			}
+			uaq := d.rebind(`UPDATE posts SET audience = ? WHERE id = ?`)
+			if _, err := db.Exec(uaq, string(updated), ar.id); err != nil {
+				return fmt.Errorf("migrate clients: update audience for post %s: %w", ar.id, err)
+			}
 		}
 	}
 	return nil
@@ -226,16 +334,25 @@ func (s *Store) TenantExists(id string) (bool, error) {
 
 // KeyRecord is the public view of a stored key.
 type KeyRecord struct {
-	ID        string
-	TenantID  string
-	Agent     string
-	CreatedAt time.Time
-	RevokedAt time.Time // zero = active
+	ID          string
+	TenantID    string
+	ClientID    string // short base-36 identity (auto-generated at key creation)
+	DisplayName string // human-readable name (auto-assigned, user-renameable)
+	Description string // admin note passed at key creation
+	CreatedAt   time.Time
+	RevokedAt   time.Time // zero = active
 }
 
-// CreateKey mints a new API key for the given tenant and agent name. The
-// plaintext key is printed once and never stored.
-func (s *Store) CreateKey(tenantID, agent string) (plaintext string, rec KeyRecord, err error) {
+// ClientRecord is the public identity view of a client (key holder).
+type ClientRecord struct {
+	ClientID    string
+	DisplayName string
+}
+
+// CreateKey mints a new API key for the given tenant. A random client_id and
+// display_name are assigned automatically; description is an admin note.
+// The plaintext key is printed once and never stored.
+func (s *Store) CreateKey(tenantID, description string) (plaintext string, rec KeyRecord, err error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", KeyRecord{}, fmt.Errorf("generate key bytes: %w", err)
@@ -247,19 +364,25 @@ func (s *Store) CreateKey(tenantID, agent string) (plaintext string, rec KeyReco
 		return "", KeyRecord{}, fmt.Errorf("generate key id: %w", err)
 	}
 	id := hex.EncodeToString(idBytes[:])
+	clientID := names.GenClientID()
+	displayName := names.Pick()
 	hash := sha256Hex(plaintext)
 	now := time.Now().UTC()
 
-	q := s.d.rebind(`INSERT INTO keys (id, tenant_id, agent, key_hash, created_at) VALUES (?, ?, ?, ?, ?)`)
-	if _, err := s.db.Exec(q, id, tenantID, agent, hash, now.Format(time.RFC3339Nano)); err != nil {
+	q := s.d.rebind(`INSERT INTO keys (id, tenant_id, agent, client_id, display_name, description, key_hash, created_at) VALUES (?, ?, '', ?, ?, ?, ?, ?)`)
+	if _, err := s.db.Exec(q, id, tenantID, clientID, displayName, description, hash, now.Format(time.RFC3339Nano)); err != nil {
 		return "", KeyRecord{}, fmt.Errorf("insert key: %w", err)
 	}
-	return plaintext, KeyRecord{ID: id, TenantID: tenantID, Agent: agent, CreatedAt: now}, nil
+	return plaintext, KeyRecord{
+		ID: id, TenantID: tenantID,
+		ClientID: clientID, DisplayName: displayName, Description: description,
+		CreatedAt: now,
+	}, nil
 }
 
 // ListKeys returns all keys for the given tenant ordered by creation time.
 func (s *Store) ListKeys(tenantID string) ([]KeyRecord, error) {
-	q := s.d.rebind(`SELECT id, tenant_id, agent, created_at, revoked_at FROM keys WHERE tenant_id = ? ORDER BY created_at ASC`)
+	q := s.d.rebind(`SELECT id, tenant_id, client_id, display_name, description, created_at, revoked_at FROM keys WHERE tenant_id = ? ORDER BY created_at ASC`)
 	rows, err := s.db.Query(q, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query keys: %w", err)
@@ -270,7 +393,7 @@ func (s *Store) ListKeys(tenantID string) ([]KeyRecord, error) {
 
 // ListAllKeys returns all keys across all tenants.
 func (s *Store) ListAllKeys() ([]KeyRecord, error) {
-	rows, err := s.db.Query(`SELECT id, tenant_id, agent, created_at, revoked_at FROM keys ORDER BY tenant_id, created_at ASC`)
+	rows, err := s.db.Query(`SELECT id, tenant_id, client_id, display_name, description, created_at, revoked_at FROM keys ORDER BY tenant_id, created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("query all keys: %w", err)
 	}
@@ -284,7 +407,7 @@ func scanKeys(rows *sql.Rows) ([]KeyRecord, error) {
 		var rec KeyRecord
 		var created string
 		var revokedS sql.NullString
-		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.Agent, &created, &revokedS); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ClientID, &rec.DisplayName, &rec.Description, &created, &revokedS); err != nil {
 			return nil, fmt.Errorf("scan key: %w", err)
 		}
 		t, err := time.Parse(time.RFC3339Nano, created)
@@ -326,16 +449,66 @@ func (s *Store) ValidateKey(key string) bool {
 	return err == nil && count > 0
 }
 
-// AgentForKey resolves a raw API key to its (tenantID, agent) pair. Returns
-// ("", "", false) if the key is unknown or revoked.
-func (s *Store) AgentForKey(key string) (tenantID, agent string, ok bool) {
+// ClientForKey resolves a raw API key to its (tenantID, clientID, displayName)
+// triple. Returns ("", "", "", false) if the key is unknown or revoked.
+func (s *Store) ClientForKey(key string) (tenantID, clientID, displayName string, ok bool) {
 	hash := sha256Hex(key)
-	q := s.d.rebind(`SELECT tenant_id, agent FROM keys WHERE key_hash = ? AND revoked_at IS NULL`)
-	err := s.db.QueryRow(q, hash).Scan(&tenantID, &agent)
+	q := s.d.rebind(`SELECT tenant_id, client_id, display_name FROM keys WHERE key_hash = ? AND revoked_at IS NULL`)
+	err := s.db.QueryRow(q, hash).Scan(&tenantID, &clientID, &displayName)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	return tenantID, agent, true
+	return tenantID, clientID, displayName, true
+}
+
+// RenameClient updates the display_name for the client identified by clientID
+// within the given tenant. Returns an error if the client is not found.
+func (s *Store) RenameClient(tenantID, clientID, newName string) error {
+	q := s.d.rebind(`UPDATE keys SET display_name = ? WHERE tenant_id = ? AND client_id = ? AND revoked_at IS NULL`)
+	res, err := s.db.Exec(q, newName, tenantID, clientID)
+	if err != nil {
+		return fmt.Errorf("rename client: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("rename client: client %s not found in tenant %s", clientID, tenantID)
+	}
+	return nil
+}
+
+// ListClients returns all active clients (distinct client_id + display_name
+// pairs) for the given tenant, ordered by display_name.
+func (s *Store) ListClients(tenantID string) ([]ClientRecord, error) {
+	q := s.d.rebind(`SELECT DISTINCT client_id, display_name FROM keys WHERE tenant_id = ? AND revoked_at IS NULL AND client_id != '' ORDER BY display_name ASC`)
+	rows, err := s.db.Query(q, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list clients: %w", err)
+	}
+	defer rows.Close()
+	var out []ClientRecord
+	for rows.Next() {
+		var r ClientRecord
+		if err := rows.Scan(&r.ClientID, &r.DisplayName); err != nil {
+			return nil, fmt.Errorf("scan client: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ClientByName finds a client by display_name within the given tenant.
+// Returns (zero, false, nil) when no match is found.
+func (s *Store) ClientByName(tenantID, name string) (ClientRecord, bool, error) {
+	q := s.d.rebind(`SELECT client_id, display_name FROM keys WHERE tenant_id = ? AND display_name = ? AND revoked_at IS NULL LIMIT 1`)
+	var r ClientRecord
+	err := s.db.QueryRow(q, tenantID, name).Scan(&r.ClientID, &r.DisplayName)
+	if err == sql.ErrNoRows {
+		return ClientRecord{}, false, nil
+	}
+	if err != nil {
+		return ClientRecord{}, false, fmt.Errorf("client by name: %w", err)
+	}
+	return r, true, nil
 }
 
 // -- Post persistence --
@@ -463,23 +636,6 @@ func (s *Store) LoadBlob(tenantID, id string) (content []byte, contentType, file
 // ErrBlobNotFound is returned by LoadBlob when no blob with that ID exists.
 var ErrBlobNotFound = fmt.Errorf("blob not found")
 
-// -- Agent identity tracking --
-
-// UpsertAgent records or updates the operator identity for a named agent
-// within a tenant.
-func (s *Store) UpsertAgent(tenantID, name, operator string) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	q := s.d.rebind(
-		`INSERT INTO agents (tenant_id, name, operator, last_seen) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(tenant_id, name) DO UPDATE SET operator = excluded.operator, last_seen = excluded.last_seen`,
-	)
-	_, err := s.db.Exec(q, tenantID, name, operator, now)
-	if err != nil {
-		return fmt.Errorf("upsert agent %s/%s: %w", tenantID, name, err)
-	}
-	return nil
-}
-
 // -- Maintenance --
 
 // Clear deletes all posts (and optionally keys and tenants) for the given
@@ -498,13 +654,6 @@ func (s *Store) Clear(tenantID string, clearKeys bool) (posts int, keys int, err
 	}
 	n, _ := res.RowsAffected()
 	posts = int(n)
-
-	if tenantID == "" {
-		_, _ = s.db.Exec(`DELETE FROM agents`)
-	} else {
-		q := s.d.rebind(`DELETE FROM agents WHERE tenant_id = ?`)
-		_, _ = s.db.Exec(q, tenantID)
-	}
 
 	if clearKeys {
 		if tenantID == "" {

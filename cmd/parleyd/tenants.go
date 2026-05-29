@@ -32,7 +32,7 @@ func tenantsHelp() {
 	fmt.Fprintf(os.Stderr, "usage: parleyd tenants <create|list>\n\n")
 	fmt.Fprintf(os.Stderr, "  create --name \"...\"   create a new tenant (returns tenant ID)\n")
 	fmt.Fprintf(os.Stderr, "  list                  show all tenants\n\n")
-	fmt.Fprintf(os.Stderr, "The tenant ID is used when minting keys: parleyd keys create --tenant <id> --agent <name>\n")
+	fmt.Fprintf(os.Stderr, "The tenant ID is used when minting keys: parleyd keys create --tenant <id>\n")
 }
 
 func cmdTenantsCreate(args []string) int {
@@ -67,7 +67,7 @@ func cmdTenantsCreate(args []string) int {
 	out.KV("name", rec.Name)
 	out.KV("created_at", rec.CreatedAt.UTC().Format(time.RFC3339))
 	out.Help(
-		fmt.Sprintf("Mint a key for this tenant: parleyd keys create --tenant %s --agent <name>", rec.ID),
+		fmt.Sprintf("Mint a key for this tenant: parleyd keys create --tenant %s", rec.ID),
 		"Run `parleyd tenants list` to see all tenants",
 	)
 	return 0
@@ -102,7 +102,7 @@ func cmdTenantsList(args []string) int {
 	}
 	out.Table("tenants", []string{"id", "name", "created"}, rows)
 	out.Help(
-		"Mint a key: parleyd keys create --tenant <id> --agent <name>",
+		"Mint a key: parleyd keys create --tenant <id> [--description \"...\"]",
 		"Run `parleyd keys list` to see all keys",
 	)
 	return 0

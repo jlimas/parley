@@ -115,7 +115,7 @@ func makeEvent(id, author, content string, ts time.Time) protocol.Event {
 }
 
 func fastClient(baseURL string) *Client {
-	c := New(baseURL, "alice")
+	c := New(baseURL)
 	c.ReconnectInitialDelay = time.Millisecond
 	c.ReconnectMaxDelay = 5 * time.Millisecond
 	c.ReconnectMaxAttempts = 5
@@ -263,7 +263,7 @@ func TestListen_ContextCancellationDuringBackoff(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	c := New(srv.URL, "alice")
+	c := New(srv.URL)
 	c.ReconnectInitialDelay = 200 * time.Millisecond
 	c.ReconnectMaxDelay = 200 * time.Millisecond
 	c.ReconnectMaxAttempts = 10

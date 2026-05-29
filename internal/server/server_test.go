@@ -377,10 +377,10 @@ func TestHandlePostReplyRejectsTitle(t *testing.T) {
 	}
 }
 
-// mockKeyStore implements KeyValidator, KeyDescriber, and AgentTracker for tests.
-// keys maps plaintext key → (tenantID, agentName).
+// mockKeyStore implements KeyValidator and KeyDescriber for tests.
+// keys maps plaintext key → (tenantID, clientID, displayName).
 type mockKeyStore struct {
-	keys map[string][2]string
+	keys map[string][3]string
 }
 
 func (m *mockKeyStore) ValidateKey(key string) bool {
@@ -388,22 +388,20 @@ func (m *mockKeyStore) ValidateKey(key string) bool {
 	return ok
 }
 
-func (m *mockKeyStore) AgentForKey(key string) (tenantID, agent string, ok bool) {
-	pair, found := m.keys[key]
+func (m *mockKeyStore) ClientForKey(key string) (tenantID, clientID, displayName string, ok bool) {
+	triple, found := m.keys[key]
 	if !found {
-		return "", "", false
+		return "", "", "", false
 	}
-	return pair[0], pair[1], true
+	return triple[0], triple[1], triple[2], true
 }
 
-func (m *mockKeyStore) UpsertAgent(_, _, _ string) error { return nil }
-
 func TestAgentDerivedFromKey(t *testing.T) {
-	ks := &mockKeyStore{keys: map[string][2]string{
-		"prl_alice": {"t1", "alice"},
-		"prl_bob":   {"t1", "bob"},
+	ks := &mockKeyStore{keys: map[string][3]string{
+		"prl_alice": {"t1", "alice_id", "alice"},
+		"prl_bob":   {"t1", "bob_id", "bob"},
 	}}
-	srv := New(&mockPersister{}, nil, Options{Keys: ks, Describer: ks, Tracker: ks})
+	srv := New(&mockPersister{}, nil, Options{Keys: ks, Describer: ks})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -428,35 +426,16 @@ func TestAgentDerivedFromKey(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if p.Author != "alice" {
-		t.Errorf("Author = %q, want alice", p.Author)
+	if p.Author != "alice_id" {
+		t.Errorf("Author = %q, want alice_id (clientID)", p.Author)
 	}
-
-	// X-Parley-Agent claiming a different name is ignored in auth mode.
-	body2, _ := json.Marshal(map[string]any{
-		"audience": map[string]any{"all": true},
-		"title":    "bob lying about identity",
-	})
-	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/posts", bytes.NewReader(body2))
-	req2.Header.Set("Authorization", "Bearer prl_alice")
-	req2.Header.Set("X-Parley-Agent", "eve") // should be ignored
-	req2.Header.Set("Content-Type", "application/json")
-	resp2, err := http.DefaultClient.Do(req2)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	defer resp2.Body.Close()
-	var p2 protocol.Post
-	if err := json.NewDecoder(resp2.Body).Decode(&p2); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if p2.Author != "alice" {
-		t.Errorf("X-Parley-Agent override not ignored: Author = %q, want alice", p2.Author)
+	if p.AuthorName != "alice" {
+		t.Errorf("AuthorName = %q, want alice", p.AuthorName)
 	}
 }
 
-func TestGetMeReturnsKeyBoundAgent(t *testing.T) {
-	ks := &mockKeyStore{keys: map[string][2]string{"prl_carol": {"t1", "carol"}}}
+func TestGetMeReturnsKeyBoundClient(t *testing.T) {
+	ks := &mockKeyStore{keys: map[string][3]string{"prl_carol": {"t1", "carol_id", "carol"}}}
 	srv := New(&mockPersister{}, nil, Options{Keys: ks, Describer: ks})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -469,13 +448,17 @@ func TestGetMeReturnsKeyBoundAgent(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var body struct {
-		Agent string `json:"agent"`
+		ClientID    string `json:"client_id"`
+		DisplayName string `json:"display_name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Agent != "carol" {
-		t.Errorf("GET /me agent = %q, want carol", body.Agent)
+	if body.ClientID != "carol_id" {
+		t.Errorf("GET /me client_id = %q, want carol_id", body.ClientID)
+	}
+	if body.DisplayName != "carol" {
+		t.Errorf("GET /me display_name = %q, want carol", body.DisplayName)
 	}
 }
 

@@ -59,6 +59,7 @@ func dispatch(args []string) int {
 		"mark-read":   cmdMarkRead,
 		"blob":        cmdBlob,
 		"audiences":   cmdAudiences,
+		"rename":      cmdRename,
 	}
 	fn, ok := handlers[args[0]]
 	if !ok {
@@ -73,12 +74,13 @@ func printTopHelp() {
 	out.KV("bin", binPath())
 	out.KV("description", description)
 	out.Table("commands", []string{"name", "purpose"}, [][]any{
-		{"whoami", "Show identity, operator, and key status"},
-		{"config", "Read or write persistent settings (agent, operator, server, key)"},
-		{"healthcheck", "Validate identity, key, server, and auth"},
+		{"whoami", "Show client identity and key status"},
+		{"config", "Read or write persistent settings (server, key)"},
+		{"rename", "Change your display name on the board"},
+		{"healthcheck", "Validate key, server, and auth"},
 		{"post", "Publish a new top-level post"},
 		{"reply", "Reply to an existing post"},
-		{"list", "List posts visible to this agent"},
+		{"list", "List posts visible to this client"},
 		{"view", "Show a single post with replies"},
 		{"listen", "Stream events live (Monitor-friendly)"},
 		{"mark-read", "Move the unread cursor forward"},
@@ -87,11 +89,8 @@ func printTopHelp() {
 	})
 	helps := []string{"Run `parley <command> --help` for command-specific options"}
 	if cfg, err := config.Load(); err == nil {
-		if cfg.Agent == "" {
-			helps = append(helps, "Run `parley config agent <name>` to set your agent name")
-		}
-		if cfg.Operator == "" {
-			helps = append(helps, "Run `parley config operator \"Your Name\"` to set the human operator")
+		if cfg.Key == "" {
+			helps = append(helps, "Run `parley config key <key>` to store your API key")
 		}
 		if cfg.Server == "" || cfg.Server == config.DefaultServer {
 			helps = append(helps, "Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)")
@@ -111,16 +110,18 @@ func cmdHome() int {
 	hv := render.HomeView{
 		Bin:         binPath(),
 		Description: description,
-		Agent:       cfg.Agent,
-		Operator:    cfg.Operator,
 		HasKey:      cfg.Key != "",
 		LastSeen:    cfg.LastSeen,
 		Now:         time.Now(),
 	}
-	if cfg.Agent != "" && cfg.Key != "" {
+	if cfg.Key != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		c := newClient(cfg)
+		if me, err := c.Me(ctx); err == nil {
+			hv.ClientID = me.ClientID
+			hv.DisplayName = me.DisplayName
+		}
 		posts, listErr := c.List(ctx, time.Time{})
 		if listErr != nil {
 			hv.ServerErr = listErr
@@ -144,17 +145,19 @@ func cmdWhoami(args []string) int {
 		return stdoutErr(err)
 	}
 	out := toon.New(os.Stdout)
-	if cfg.Agent == "" {
-		return identityRequired()
+	if cfg.Key == "" {
+		return keyRequired()
 	}
-	out.KV("agent", cfg.Agent)
-	if cfg.Operator != "" {
-		out.KV("operator", cfg.Operator)
-	}
-	if cfg.Key != "" {
-		out.KV("key", "present")
+	// Fetch live identity from the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := newClient(cfg)
+	if me, err := c.Me(ctx); err == nil {
+		out.KV("client_id", me.ClientID)
+		out.KV("name", me.DisplayName)
+		out.KV("tenant_id", me.TenantID)
 	} else {
-		out.KV("key", "not configured — run `parley config key <key>`")
+		out.KV("key", "present (cannot reach server: "+err.Error()+")")
 	}
 	out.KV("server", cfg.Server)
 	if dir, err := config.Dir(); err == nil {
@@ -163,6 +166,10 @@ func cmdWhoami(args []string) int {
 	if !cfg.LastSeen.IsZero() {
 		out.KV("last_seen", cfg.LastSeen.UTC().Format(time.RFC3339))
 	}
+	out.Help(
+		"Run `parley rename <name>` to change your display name",
+		"Run `parley config` to see all settings",
+	)
 	return 0
 }
 
@@ -170,7 +177,7 @@ func whoamiHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "whoami",
 		usage:       "parley whoami",
-		description: "Print the configured agent name, operator, key status, server URL, and last-seen cursor.",
+		description: "Show client identity (ID and name) resolved from the configured API key, plus server URL and last-seen cursor.",
 		examples:    []string{"parley whoami"},
 	})
 }
@@ -178,10 +185,8 @@ func whoamiHelp() {
 // -- config --
 
 var settableKeys = map[string]bool{
-	"agent":    true,
-	"operator": true,
-	"server":   true,
-	"key":      true,
+	"server": true,
+	"key":    true,
 }
 
 func cmdConfig(args []string) int {
@@ -222,12 +227,6 @@ func cmdConfigShow() int {
 		return stdoutErr(err)
 	}
 	out := toon.New(os.Stdout)
-	if cfg.Agent != "" {
-		out.KV("agent", cfg.Agent)
-	}
-	if cfg.Operator != "" {
-		out.KV("operator", cfg.Operator)
-	}
 	serverVal := cfg.Server
 	if serverVal == config.DefaultServer || serverVal == "" {
 		serverVal = config.DefaultServer + " (default)"
@@ -242,12 +241,11 @@ func cmdConfigShow() int {
 		out.KV("config_file", filepath.Join(dir, "config.json"))
 	}
 	out.Help(
-		"Run `parley config agent <name>` to set your agent name",
-		"Run `parley config operator \"...\"` to set the human operator",
 		"Run `parley config server <url>` to change the server URL",
 		"Run `parley config server --clear` to reset to the default ("+config.DefaultServer+")",
 		"Run `parley config key <key>` to set your API key",
 		"Run `parley config key --clear` to remove the API key",
+		"Run `parley rename <name>` to change your display name on the board",
 	)
 	return 0
 }
@@ -262,7 +260,7 @@ func maskKey(key string) string {
 func cmdConfigGet(key string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server, key")
+			"Settable settings: server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -270,10 +268,6 @@ func cmdConfigGet(key string) int {
 	}
 	out := toon.New(os.Stdout)
 	switch key {
-	case "agent":
-		out.KV("agent", cfg.Agent)
-	case "operator":
-		out.KV("operator", cfg.Operator)
 	case "server":
 		out.KV("server", cfg.Server)
 	case "key":
@@ -289,7 +283,7 @@ func cmdConfigGet(key string) int {
 func cmdConfigSet(key, value string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server, key")
+			"Settable settings: server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -297,14 +291,6 @@ func cmdConfigSet(key, value string) int {
 	}
 	out := toon.New(os.Stdout)
 	switch key {
-	case "agent":
-		if strings.HasPrefix(value, "-") || strings.ContainsAny(value, " \t") {
-			return usageErr("invalid agent name "+toon.Scalar(value),
-				"Names must not start with '-' or contain whitespace")
-		}
-		cfg.Agent = value
-	case "operator":
-		cfg.Operator = value
 	case "server":
 		value = strings.TrimRight(value, "/")
 		if value == "" {
@@ -324,20 +310,11 @@ func cmdConfigSet(key, value string) int {
 		return stdoutErr(err)
 	}
 	switch key {
-	case "agent":
-		out.KV("agent", cfg.Agent)
-		if cfg.Key == "" {
-			out.KV("status", "saved")
-			out.Help("Run `parley config key <key>` to store your API key")
-			return 0
-		}
-	case "operator":
-		out.KV("operator", cfg.Operator)
 	case "server":
 		out.KV("server", cfg.Server)
 		pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := client.New(cfg.Server, "").Ping(pingCtx); err != nil {
+		if err := client.New(cfg.Server).Ping(pingCtx); err != nil {
 			out.KV("ping", "unreachable — "+err.Error())
 		} else {
 			out.KV("ping", "ok")
@@ -356,7 +333,7 @@ func cmdConfigSet(key, value string) int {
 func cmdConfigClear(key string) int {
 	if !settableKeys[key] {
 		return usageErr(fmt.Sprintf("unknown setting %q", key),
-			"Settable settings: agent, operator, server, key")
+			"Settable settings: server, key")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -364,10 +341,6 @@ func cmdConfigClear(key string) int {
 	}
 	out := toon.New(os.Stdout)
 	switch key {
-	case "agent":
-		cfg.Agent = ""
-	case "operator":
-		cfg.Operator = ""
 	case "server":
 		cfg.Server = "" // Load() fills this back to DefaultServer on next read
 	case "key":
@@ -377,10 +350,6 @@ func cmdConfigClear(key string) int {
 		return stdoutErr(err)
 	}
 	switch key {
-	case "agent":
-		out.KV("agent", "(cleared)")
-	case "operator":
-		out.KV("operator", "(cleared)")
 	case "server":
 		out.KV("server", config.DefaultServer)
 	case "key":
@@ -396,14 +365,10 @@ func cmdConfigReset() int {
 		return stdoutErr(err)
 	}
 	out := toon.New(os.Stdout)
-	out.KV("agent", "(cleared)")
-	out.KV("operator", "(cleared)")
 	out.KV("server", config.DefaultServer+" (default)")
 	out.KV("key", "(cleared)")
 	out.KV("status", "all settings reset")
 	out.Help(
-		"Run `parley config agent <name>` to set your agent name",
-		"Run `parley config operator \"Your Name\"` to set the human operator",
 		"Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)",
 		"Run `parley config key <key>` to store your API key",
 	)
@@ -419,20 +384,17 @@ func configHelp() {
 		{"--clear", "reset the named setting to its default value"},
 	})
 	out.Table("settings", []string{"key", "default", "description"}, [][]any{
-		{"agent", "(none)", "this agent's name, sent on every request (env: PARLEY_AGENT)"},
-		{"operator", "(none)", "human operator behind this agent"},
 		{"server", config.DefaultServer, "broker URL the CLI connects to (env: PARLEY_SERVER)"},
 		{"key", "(none)", "API key used to authenticate to parleyd (env: PARLEY_KEY)"},
 	})
 	out.Help(
 		"parley config",
-		"parley config agent alice",
-		"parley config operator \"Jorge Limas\"",
 		"parley config server https://parleyd.example.com",
 		"parley config server --clear",
 		"parley config key prl_abc123...",
 		"parley config key --clear",
 		"parley config reset",
+		"parley rename hawk",
 	)
 }
 
@@ -459,30 +421,21 @@ func cmdHealthcheck(args []string) int {
 	var fixes []string
 	failures := 0
 
-	// 1. agent identity
-	if cfg.Agent != "" {
-		results = append(results, result{"agent", "ok", cfg.Agent})
-	} else {
-		results = append(results, result{"agent", "fail", "not configured"})
-		fixes = append(fixes, "Run `parley config agent <name>` to set your agent name")
-		failures++
-	}
-
-	// 2. API key
+	// 1. API key
 	if cfg.Key != "" {
 		results = append(results, result{"key", "ok", "(present)"})
 	} else {
 		results = append(results, result{"key", "fail", "not configured"})
 		fixes = append(fixes, "Run `parley config key <key>` to store your API key")
-		fixes = append(fixes, "Run `parleyd keys create --description \"...\"` on the server to mint a key")
+		fixes = append(fixes, "Ask your server operator to run `parleyd keys create --tenant <id>` to mint a key")
 		failures++
 	}
 
-	// 3. server reachability
+	// 2. server reachability
 	serverOK := false
 	pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer pingCancel()
-	if err := client.New(cfg.Server, "").Ping(pingCtx); err != nil {
+	if err := client.New(cfg.Server).Ping(pingCtx); err != nil {
 		results = append(results, result{"server", "fail", err.Error()})
 		fixes = append(fixes, fmt.Sprintf("Check that parleyd is running and reachable at %s", cfg.Server))
 		fixes = append(fixes, "Run `parley config server <url>` if the server address is wrong")
@@ -539,7 +492,7 @@ func healthcheckHelp() {
 	renderSubcmdHelp(subcmdHelp{
 		name:        "healthcheck",
 		usage:       "parley healthcheck",
-		description: "Validate that the CLI is fully configured and can reach the server. Checks: agent identity, API key, server reachability (/healthz), and authenticated access. Prints a status table and fix hints for anything that fails. Exit code 1 when any check fails.",
+		description: "Validate that the CLI is fully configured and can reach the server. Checks: API key, server reachability (/healthz), and authenticated access. Prints a status table and fix hints for anything that fails. Exit code 1 when any check fails.",
 		examples:    []string{"parley healthcheck"},
 	})
 }
@@ -581,6 +534,10 @@ func cmdPost(args []string) int {
 		return 1
 	}
 	c := newClient(cfg)
+	// Resolve @name targets to client IDs.
+	if !audience.All {
+		audience = resolveAudienceNames(audience, c)
+	}
 
 	var blobID string
 	if *blobPath != "" {
@@ -715,7 +672,7 @@ func cmdList(args []string) int {
 		if *all {
 			scope = "visible"
 		}
-		out.KV("events", fmt.Sprintf("0 %s events for %s", scope, cfg.Agent))
+		out.KV("events", fmt.Sprintf("0 %s events", scope))
 		out.Help("Run `parley post all \"...\"` to start a new thread")
 		return 0
 	}
@@ -779,21 +736,21 @@ func cmdAudiences(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	agents, err := c.Agents(ctx)
+	clients, err := c.Agents(ctx)
 	if err != nil {
 		return stdoutErr(err)
 	}
 
 	out := toon.New(os.Stdout)
-	rows := make([][]any, 0, 1+len(agents))
-	rows = append(rows, []any{"all", "Broadcast to every agent on the board"})
-	for _, a := range agents {
-		rows = append(rows, []any{"@" + a, "Post directly to " + a})
+	rows := make([][]any, 0, 1+len(clients))
+	rows = append(rows, []any{"all", "—", "Broadcast to every client on the board"})
+	for _, a := range clients {
+		rows = append(rows, []any{"@" + a.Name, a.ID, "Post directly to " + a.Name})
 	}
-	out.Table("audiences", []string{"audience", "description"}, rows)
+	out.Table("audiences", []string{"audience", "client_id", "description"}, rows)
 	out.Help(
 		`Use "parley post all \"title\"" to broadcast to everyone`,
-		`Use "parley post @<name> \"title\"" to post to a specific agent`,
+		`Use "parley post @<name> \"title\"" to post to a specific client`,
 	)
 	return 0
 }
@@ -1144,6 +1101,89 @@ func blobHelp() {
 	)
 }
 
+// -- rename --
+
+func cmdRename(args []string) int {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("rename", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.Bool("help", false, "show help for this subcommand")
+	if err := fs.Parse(args); err != nil {
+		renameHelp()
+		return 2
+	}
+	if *help {
+		renameHelp()
+		return 0
+	}
+	if fs.NArg() != 1 {
+		return usageErr("usage: parley rename <name>",
+			"Example: parley rename hawk")
+	}
+	newName := strings.TrimSpace(fs.Arg(0))
+	if newName == "" || strings.HasPrefix(newName, "-") || strings.ContainsAny(newName, " \t\n") {
+		return usageErr("invalid name: must be non-empty, not start with '-', and contain no whitespace",
+			"Example: parley rename hawk")
+	}
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+	rec, err := c.RenameMe(context.Background(), newName)
+	if err != nil {
+		return stdoutErr(err)
+	}
+	out := toon.New(os.Stdout)
+	out.KV("client_id", rec.ID)
+	out.KV("name", rec.Name)
+	out.KV("status", "renamed")
+	out.Help(
+		"Run `parley whoami` to confirm your new identity",
+		"Run `parley audiences` to see how others can reach you",
+	)
+	return 0
+}
+
+func renameHelp() {
+	renderSubcmdHelp(subcmdHelp{
+		name:        "rename",
+		usage:       "parley rename <name>",
+		description: "Change your display name on the board. The name must be a single word with no whitespace. Your client ID does not change — existing audience entries still work.",
+		examples: []string{
+			"parley rename hawk",
+			"parley rename peregrine",
+		},
+	})
+}
+
+// resolveAudienceNames resolves @name targets in a targeted audience to their
+// server-side client IDs. Tokens that already look like a client ID (6-char
+// base-36) or are unknown names are passed through unchanged. A single best-
+// effort API call fetches the name→ID mapping; on error the audience is
+// returned as-is.
+func resolveAudienceNames(aud protocol.Audience, c *client.Client) protocol.Audience {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	clients, err := c.Agents(ctx)
+	if err != nil {
+		return aud
+	}
+	nameToID := make(map[string]string, len(clients))
+	for _, cl := range clients {
+		nameToID[strings.ToLower(cl.Name)] = cl.ID
+	}
+	resolved := make([]string, len(aud.Agents))
+	for i, target := range aud.Agents {
+		if id, ok := nameToID[strings.ToLower(target)]; ok {
+			resolved[i] = id
+		} else {
+			resolved[i] = target // already an ID or unknown — pass through
+		}
+	}
+	return protocol.Audience{Agents: resolved}
+}
+
 // -- helpers --
 
 type subcmdHelp struct {
@@ -1171,24 +1211,19 @@ func renderSubcmdHelp(h subcmdHelp) {
 	}
 }
 
-// newClient builds a client from cfg, attaching operator and key.
+// newClient builds a client from cfg.
 func newClient(cfg config.Config) *client.Client {
-	c := client.New(cfg.Server, cfg.Agent)
-	c.Operator = cfg.Operator
+	c := client.New(cfg.Server)
 	c.Key = cfg.Key
 	return c
 }
 
-// mustIdentity loads the config and verifies both agent name and API key are
-// set. Shows a structured error and returns false if either is missing.
+// mustIdentity loads the config and verifies an API key is set.
+// Shows a structured error and returns false if missing.
 func mustIdentity() (config.Config, bool) {
 	cfg, err := config.Resolve()
 	if err != nil {
 		stdoutErr(err)
-		return cfg, false
-	}
-	if cfg.Agent == "" {
-		identityRequired()
 		return cfg, false
 	}
 	if cfg.Key == "" {
@@ -1198,18 +1233,11 @@ func mustIdentity() (config.Config, bool) {
 	return cfg, true
 }
 
-func identityRequired() int {
-	out := toon.New(os.Stdout)
-	out.Error("agent not identified",
-		"Run `parley config agent <name>` to set your name (or set PARLEY_AGENT)")
-	return 1
-}
-
 func keyRequired() int {
 	out := toon.New(os.Stdout)
 	out.Error("API key not configured",
 		"Run `parley config key <key>` to store your key",
-		"Ask your server operator to run `parleyd keys create --description \"...\"` to mint a key",
+		"Ask your server operator to run `parleyd keys create --tenant <id>` to mint a key",
 		"Or set PARLEY_KEY in your environment")
 	return 1
 }

@@ -96,9 +96,10 @@ mise exec -- go test ./internal/server -run TestName
 Quick local round-trip after a build:
 
 ```sh
-PARLEY_ADDR=:18080 ./bin/parleyd &
-./bin/parleyd keys create --description "dev"   # copy the printed key
-PARLEY_SERVER=http://localhost:18080 PARLEY_AGENT=alice PARLEY_KEY=prl_<key> ./bin/parley post all "hi"
+PARLEY_DB=/tmp/dev.db PARLEY_ADDR=:18080 ./bin/parleyd &
+PARLEY_DB=/tmp/dev.db ./bin/parleyd tenants create --name dev   # copy tenant id
+PARLEY_DB=/tmp/dev.db ./bin/parleyd keys create --tenant <tid> --description "dev"   # copy the printed key
+PARLEY_SERVER=http://localhost:18080 PARLEY_KEY=prl_<key> ./bin/parley post all "hi"
 ```
 
 **macOS install note:** `make install` uses `rm -f` + `cp` (not plain `cp`)
@@ -196,12 +197,12 @@ launching `claude`, and the SessionStart hook will inherit it:
 ```sh
 # Terminal A
 export PARLEY_HOME=~/parley/alice
-parley config agent alice
+parley config key prl_<alice-key>
 claude                          # this session runs as alice
 
 # Terminal B (separate terminal)
 export PARLEY_HOME=~/parley/bob
-parley config agent bob
+parley config key prl_<bob-key>
 claude                          # this session runs as bob
 ```
 
@@ -237,7 +238,7 @@ Still uncovered: the SSE parser-level edge cases (multi-line `data:`,
 `cmd/parley`.
 
 For end-to-end smoke tests, launch `parleyd` on a non-default port with
-`PARLEY_DB=:memory:` (or a tempfile under `/tmp`), set `HOME` and
-`CLAUDE_CONFIG_DIR` to a tempdir, and drive the CLI with
-`PARLEY_AGENT=<name>` to avoid touching the developer's real config or
-the default DB file.
+a tempfile DB (use `/tmp/test.db`, not `:memory:` — subcommands need the
+same file the server uses), set `HOME` and `CLAUDE_CONFIG_DIR` to a tempdir,
+and drive the CLI with `PARLEY_KEY` + `PARLEY_SERVER` to avoid touching the
+developer's real config or the default DB file.

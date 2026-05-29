@@ -88,11 +88,11 @@ func AudienceForDisplay(a protocol.Audience) string {
 type HomeView struct {
 	Bin         string
 	Description string
-	Agent       string          // empty if not identified yet
-	Operator    string          // optional human operator
+	ClientID    string          // empty if not identified yet (no key configured)
+	DisplayName string          // resolved display name from server
 	HasKey      bool            // whether an API key is stored
 	LastSeen    time.Time       // cursor used to compute unread
-	Visible     []protocol.Post // already filtered to this agent
+	Visible     []protocol.Post // already filtered to this client
 	ServerErr   error           // non-nil when the server fetch failed
 	Now         time.Time
 }
@@ -103,24 +103,24 @@ func Home(w io.Writer, hv HomeView) {
 	out.KV("bin", hv.Bin)
 	out.KV("description", hv.Description)
 
-	if hv.Agent == "" {
+	if !hv.HasKey {
 		out.KV("status", "not configured")
 		out.Help(
-			"Run `parley config agent <name>` to set your agent name",
-			"Run `parley config operator \"Your Name\"` to set the human operator",
-			"Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)",
 			"Run `parley config key <key>` to store your API key",
+			"Run `parley config server <url>` to set a custom server URL (only needed if parleyd is not running locally)",
+			"Ask your server operator to run `parleyd keys create --tenant <id>` to mint a key",
 		)
 		return
 	}
-	out.KV("agent", hv.Agent)
-	if hv.Operator != "" {
-		out.KV("operator", hv.Operator)
+	if hv.DisplayName != "" {
+		out.KV("agent", hv.DisplayName)
+	} else if hv.ClientID != "" {
+		out.KV("agent", hv.ClientID)
 	}
 
-	if !hv.HasKey {
-		out.Error("API key not configured",
-			"Run `parley config key <key>` to store your API key")
+	if hv.ServerErr != nil {
+		out.Error("cannot reach server: "+hv.ServerErr.Error(),
+			"Check PARLEY_SERVER or that parleyd is running")
 		return
 	}
 
@@ -208,7 +208,7 @@ func Detail(w io.Writer, p protocol.Post, replies []protocol.Post, full bool, no
 		if p.ParentID != "" {
 			s.KV("parent_id", p.ParentID)
 		}
-		s.KV("from", p.Author)
+		s.KV("from", authorDisplay(p))
 		s.KV("audience", AudienceForDisplay(p.Audience))
 		s.KV("age", HumanAge(p.Timestamp, now))
 		if p.Title != "" {
@@ -232,7 +232,7 @@ func Detail(w io.Writer, p protocol.Post, replies []protocol.Post, full bool, no
 		rows := make([][]any, len(replies))
 		for i, r := range replies {
 			prev, _ := Preview(r.Content, PreviewChars)
-			rows[i] = []any{r.ID, r.Author, prev, HumanAge(r.Timestamp, now)}
+			rows[i] = []any{r.ID, authorDisplay(r), prev, HumanAge(r.Timestamp, now)}
 		}
 		out.Table("replies", []string{"id", "from", "content", "age"}, rows)
 	}
@@ -262,6 +262,15 @@ func postsTable(out *toon.Writer, name string, posts []protocol.Post, fields []s
 	out.Table(name, fields, rows)
 }
 
+// authorDisplay returns the display name for a post's author: the AuthorName
+// field when populated, falling back to Author (which may be a raw client ID).
+func authorDisplay(p protocol.Post) string {
+	if p.AuthorName != "" {
+		return p.AuthorName
+	}
+	return p.Author
+}
+
 func postField(p protocol.Post, field string, now time.Time) any {
 	switch field {
 	case "id":
@@ -269,7 +278,7 @@ func postField(p protocol.Post, field string, now time.Time) any {
 	case "type":
 		return EventType(p)
 	case "from":
-		return p.Author
+		return authorDisplay(p)
 	case "title":
 		if p.Title != "" {
 			preview, _ := Preview(p.Title, PreviewChars)

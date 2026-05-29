@@ -20,6 +20,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/jlimas/parley/internal/protocol"
+	"github.com/jlimas/parley/internal/store"
 )
 
 type subscriber struct {
@@ -38,16 +39,20 @@ type KeyValidator interface {
 	ValidateKey(key string) bool
 }
 
-// KeyDescriber resolves a raw API key to its (tenantID, agent) pair.
+// KeyDescriber resolves a raw API key to its (tenantID, clientID, displayName) triple.
 // Used by the auth middleware to derive identity from the key on every request.
 type KeyDescriber interface {
-	AgentForKey(key string) (tenantID, agent string, ok bool)
+	ClientForKey(key string) (tenantID, clientID, displayName string, ok bool)
 }
 
-// AgentTracker records the operator identity for an agent within a tenant.
-// A nil AgentTracker silently skips tracking.
-type AgentTracker interface {
-	UpsertAgent(tenantID, name, operator string) error
+// ClientRenamer updates the display name of a client within a tenant.
+type ClientRenamer interface {
+	RenameClient(tenantID, clientID, newName string) error
+}
+
+// ClientLister returns all active clients for a tenant.
+type ClientLister interface {
+	ListClients(tenantID string) ([]store.ClientRecord, error)
 }
 
 // BlobStore stores and retrieves raw blob content scoped to a tenant.
@@ -62,17 +67,24 @@ type BlobStore interface {
 type Options struct {
 	Keys      KeyValidator
 	Describer KeyDescriber
-	Tracker   AgentTracker
+	Renamer   ClientRenamer
+	Lister    ClientLister
 	Blobs     BlobStore
 }
 
 // -- Context keys --
 
-type ctxAgentKey struct{}
+type ctxAgentKey struct{}       // holds clientID (short base-36 ID)
+type ctxDisplayNameKey struct{} // holds current display name for the client
 type ctxTenantKey struct{}
 
 func agentFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxAgentKey{}).(string)
+	return v
+}
+
+func displayNameFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxDisplayNameKey{}).(string)
 	return v
 }
 
@@ -81,7 +93,7 @@ func tenantFromCtx(ctx context.Context) string {
 	return v
 }
 
-// resolveAgent returns the key-derived agent from context; falls back to the
+// resolveAgent returns the key-derived clientID from context; falls back to the
 // X-Parley-Agent header only in no-auth dev mode.
 func resolveAgent(ctx context.Context, header string) string {
 	if v := agentFromCtx(ctx); v != "" {
@@ -296,13 +308,14 @@ func sinceLog(t time.Time) string {
 // -- Server --
 
 type Server struct {
-	mu           sync.RWMutex
-	hubs         map[string]*Hub // tenant_id → hub
-	persist      Persister
-	keyValidator KeyValidator
-	keyDescriber KeyDescriber
-	agentTracker AgentTracker
-	blobStore    BlobStore
+	mu            sync.RWMutex
+	hubs          map[string]*Hub // tenant_id → hub
+	persist       Persister
+	keyValidator  KeyValidator
+	keyDescriber  KeyDescriber
+	clientRenamer ClientRenamer
+	clientLister  ClientLister
+	blobStore     BlobStore
 }
 
 // New constructs a server backed by persist for durability, seeded with
@@ -318,7 +331,8 @@ func New(persist Persister, initialByTenant map[string][]protocol.Post, opts ...
 	if len(opts) > 0 {
 		s.keyValidator = opts[0].Keys
 		s.keyDescriber = opts[0].Describer
-		s.agentTracker = opts[0].Tracker
+		s.clientRenamer = opts[0].Renamer
+		s.clientLister = opts[0].Lister
 		s.blobStore = opts[0].Blobs
 	}
 	return s
@@ -401,16 +415,26 @@ func (s *Server) Handler() http.Handler {
 		OperationID: "get-me",
 		Method:      http.MethodGet,
 		Path:        "/me",
-		Summary:     "Resolve the agent identity bound to the authenticated key",
+		Summary:     "Resolve the client identity bound to the authenticated key",
 		Tags:        []string{"auth"},
 		Security:    security,
 	}, s.handleGetMe)
 
 	huma.Register(api, huma.Operation{
+		OperationID:   "rename-me",
+		Method:        http.MethodPatch,
+		Path:          "/me/name",
+		Summary:       "Rename the authenticated client's display name",
+		Tags:          []string{"auth"},
+		DefaultStatus: http.StatusOK,
+		Security:      security,
+	}, s.handleRenameMe)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "list-agents",
 		Method:      http.MethodGet,
 		Path:        "/agents",
-		Summary:     "List all agents known to this tenant's board",
+		Summary:     "List all clients known to this tenant",
 		Tags:        []string{"agents"},
 		Security:    security,
 	}, s.handleListAgents)
@@ -425,8 +449,8 @@ func (s *Server) Handler() http.Handler {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, X-Parley-Agent, X-Parley-Operator, X-Parley-Key, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, X-Parley-Key, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -455,13 +479,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if s.keyDescriber != nil {
-			tenantID, agent, ok := s.keyDescriber.AgentForKey(key)
-			if !ok || tenantID == "" || agent == "" {
-				http.Error(w, "API key has no associated tenant/agent", http.StatusInternalServerError)
+			tenantID, clientID, displayName, ok := s.keyDescriber.ClientForKey(key)
+			if !ok || tenantID == "" || clientID == "" {
+				http.Error(w, "API key has no associated tenant/client", http.StatusInternalServerError)
 				return
 			}
 			ctx := context.WithValue(r.Context(), ctxTenantKey{}, tenantID)
-			ctx = context.WithValue(ctx, ctxAgentKey{}, agent)
+			ctx = context.WithValue(ctx, ctxAgentKey{}, clientID)
+			ctx = context.WithValue(ctx, ctxDisplayNameKey{}, displayName)
 			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
@@ -475,19 +500,6 @@ func bearerToken(r *http.Request) string {
 		}
 	}
 	return r.Header.Get("X-Parley-Key")
-}
-
-func (s *Server) trackOperator(tenantID, agent, operator string) {
-	if s.agentTracker == nil {
-		return
-	}
-	op := strings.TrimSpace(operator)
-	if op == "" {
-		return
-	}
-	if err := s.agentTracker.UpsertAgent(tenantID, agent, op); err != nil {
-		log.Printf("parleyd: track operator tenant=%s agent=%s: %v", tenantID, agent, err)
-	}
 }
 
 func accessLog(next http.Handler) http.Handler {
@@ -549,10 +561,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (*CreatePostOutput, error) {
 	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
+	}
+	displayName := displayNameFromCtx(ctx)
+	if displayName == "" {
+		displayName = agent // dev mode fallback: use agent header value as display name
 	}
 	tenantID := tenantFromCtx(ctx)
-	s.trackOperator(tenantID, agent, input.Operator)
 
 	hub := s.hubFor(tenantID)
 
@@ -603,13 +618,14 @@ func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (
 		}
 	}
 	stored, err := hub.Publish(protocol.Post{
-		Author:   agent,
-		Audience: audience,
-		Title:    title,
-		Content:  ptrStr(input.Body.Content),
-		ParentID: parentID,
-		BlobID:   blobID,
-		BlobName: blobName,
+		Author:     agent,
+		AuthorName: displayName,
+		Audience:   audience,
+		Title:      title,
+		Content:    ptrStr(input.Body.Content),
+		ParentID:   parentID,
+		BlobID:     blobID,
+		BlobName:   blobName,
 	})
 	if err != nil {
 		log.Printf("parleyd: persist post: %v", err)
@@ -621,10 +637,9 @@ func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (
 func (s *Server) handleListPosts(ctx context.Context, input *ListPostsInput) (*ListPostsOutput, error) {
 	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
 	}
 	tenantID := tenantFromCtx(ctx)
-	s.trackOperator(tenantID, agent, input.Operator)
 
 	var since time.Time
 	if input.Since != "" {
@@ -634,51 +649,117 @@ func (s *Server) handleListPosts(ctx context.Context, input *ListPostsInput) (*L
 		}
 		since = t
 	}
-	return &ListPostsOutput{Body: s.hubFor(tenantID).Visible(agent, since)}, nil
+	posts := s.hubFor(tenantID).Visible(agent, since)
+	s.resolveAuthorNames(tenantID, posts)
+	return &ListPostsOutput{Body: posts}, nil
 }
 
 func (s *Server) handleGetPost(ctx context.Context, input *GetPostInput) (*GetPostOutput, error) {
 	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
 	}
 	tenantID := tenantFromCtx(ctx)
-	s.trackOperator(tenantID, agent, input.Operator)
 
 	post, replies, ok := s.hubFor(tenantID).Thread(input.ID, agent)
 	if !ok {
 		return nil, huma.Error404NotFound("post not found")
 	}
-	return &GetPostOutput{Body: protocol.Thread{Post: post, Replies: replies}}, nil
+	all := append([]protocol.Post{post}, replies...)
+	s.resolveAuthorNames(tenantID, all)
+	return &GetPostOutput{Body: protocol.Thread{Post: all[0], Replies: all[1:]}}, nil
+}
+
+// resolveAuthorNames populates AuthorName on each post by looking up all
+// client IDs for the tenant in one batch. Posts already having an AuthorName
+// set (e.g. freshly published) are skipped.
+func (s *Server) resolveAuthorNames(tenantID string, posts []protocol.Post) {
+	if s.clientLister == nil || len(posts) == 0 {
+		return
+	}
+	clients, err := s.clientLister.ListClients(tenantID)
+	if err != nil {
+		return
+	}
+	nameMap := make(map[string]string, len(clients))
+	for _, c := range clients {
+		nameMap[c.ClientID] = c.DisplayName
+	}
+	for i := range posts {
+		if name, ok := nameMap[posts[i].Author]; ok {
+			posts[i].AuthorName = name
+		}
+	}
 }
 
 func (s *Server) handleGetMe(ctx context.Context, _ *MeInput) (*MeOutput, error) {
-	agent := agentFromCtx(ctx)
+	clientID := agentFromCtx(ctx)
+	displayName := displayNameFromCtx(ctx)
 	tenant := tenantFromCtx(ctx)
-	if agent == "" {
-		agent = "unknown"
+	if clientID == "" {
+		clientID = "unknown"
 	}
-	return &MeOutput{Body: MeBody{Agent: agent, TenantID: tenant}}, nil
+	return &MeOutput{Body: MeBody{ClientID: clientID, DisplayName: displayName, TenantID: tenant}}, nil
+}
+
+func (s *Server) handleRenameMe(ctx context.Context, input *RenameInput) (*RenameOutput, error) {
+	clientID := agentFromCtx(ctx)
+	if clientID == "" {
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
+	}
+	tenantID := tenantFromCtx(ctx)
+	newName := strings.TrimSpace(input.Body.Name)
+	if newName == "" {
+		return nil, huma.Error400BadRequest("name must not be empty")
+	}
+	if strings.HasPrefix(newName, "-") || strings.ContainsAny(newName, " \t\n") {
+		return nil, huma.Error400BadRequest("name must not start with '-' or contain whitespace")
+	}
+	if s.clientRenamer == nil {
+		return nil, huma.Error501NotImplemented("rename not available")
+	}
+	if err := s.clientRenamer.RenameClient(tenantID, clientID, newName); err != nil {
+		return nil, huma.Error500InternalServerError("rename: " + err.Error())
+	}
+	out := &RenameOutput{}
+	out.Body.ClientID = clientID
+	out.Body.DisplayName = newName
+	return out, nil
 }
 
 func (s *Server) handleListAgents(ctx context.Context, input *ListAgentsInput) (*ListAgentsOutput, error) {
 	agent := resolveAgent(ctx, input.Agent)
 	if agent == "" {
-		return nil, huma.Error400BadRequest("agent identity required: authenticate with a valid API key")
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
 	}
 	tenantID := tenantFromCtx(ctx)
-	s.trackOperator(tenantID, agent, input.Operator)
-	return &ListAgentsOutput{Body: s.hubFor(tenantID).KnownAgents()}, nil
+	if s.clientLister == nil {
+		// fall back to hub-derived names (dev/no-auth mode)
+		known := s.hubFor(tenantID).KnownAgents()
+		items := make([]ClientItem, len(known))
+		for i, n := range known {
+			items[i] = ClientItem{ID: n, Name: n}
+		}
+		return &ListAgentsOutput{Body: items}, nil
+	}
+	clients, err := s.clientLister.ListClients(tenantID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("list clients: " + err.Error())
+	}
+	items := make([]ClientItem, len(clients))
+	for i, c := range clients {
+		items[i] = ClientItem{ID: c.ClientID, Name: c.DisplayName}
+	}
+	return &ListAgentsOutput{Body: items}, nil
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	agent := resolveAgent(r.Context(), r.Header.Get("X-Parley-Agent"))
 	if agent == "" {
-		http.Error(w, "agent identity required: authenticate with a valid API key", http.StatusBadRequest)
+		http.Error(w, "client identity required: authenticate with a valid API key", http.StatusBadRequest)
 		return
 	}
 	tenantID := tenantFromCtx(r.Context())
-	s.trackOperator(tenantID, agent, r.Header.Get("X-Parley-Operator"))
 
 	var since time.Time
 	if v := r.URL.Query().Get("since"); v != "" {

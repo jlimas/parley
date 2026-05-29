@@ -19,11 +19,9 @@ import (
 )
 
 type Client struct {
-	BaseURL  string
-	Agent    string
-	Operator string // sent as X-Parley-Operator on every request (optional)
-	Key      string // sent as Authorization: Bearer on every request (optional)
-	HTTP     *http.Client
+	BaseURL string
+	Key     string // sent as Authorization: Bearer on every request (optional)
+	HTTP    *http.Client
 
 	// ReconnectInitialDelay is the first wait after a dropped SSE stream.
 	// Subsequent waits double up to ReconnectMaxDelay. Zero means default.
@@ -38,20 +36,15 @@ type Client struct {
 	ReconnectMaxAttempts int
 }
 
-func New(baseURL, agent string) *Client {
+func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		Agent:   agent,
 		HTTP:    &http.Client{},
 	}
 }
 
-// setHeaders attaches the agent identity, operator identity, and API key to r.
+// setHeaders attaches the API key to r.
 func (c *Client) setHeaders(r *http.Request) {
-	r.Header.Set("X-Parley-Agent", c.Agent)
-	if c.Operator != "" {
-		r.Header.Set("X-Parley-Operator", c.Operator)
-	}
 	if c.Key != "" {
 		r.Header.Set("Authorization", "Bearer "+c.Key)
 	}
@@ -151,8 +144,14 @@ func (c *Client) View(ctx context.Context, id string) (protocol.Thread, error) {
 // ErrNotFound is returned by View when the post id is unknown or hidden.
 var ErrNotFound = errors.New("post not found")
 
-// Agents returns the sorted list of agent names known to the board.
-func (c *Client) Agents(ctx context.Context) ([]string, error) {
+// ClientRecord holds the public identity of a client (ID + display name).
+type ClientRecord struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// Agents returns the list of clients known to the board.
+func (c *Client) Agents(ctx context.Context) ([]ClientRecord, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/agents", nil)
 	if err != nil {
 		return nil, err
@@ -167,11 +166,42 @@ func (c *Client) Agents(ctx context.Context) ([]string, error) {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
-	var agents []string
-	if err := json.NewDecoder(resp.Body).Decode(&agents); err != nil {
+	var clients []ClientRecord
+	if err := json.NewDecoder(resp.Body).Decode(&clients); err != nil {
 		return nil, err
 	}
-	return agents, nil
+	return clients, nil
+}
+
+// RenameMe changes the authenticated client's display name.
+func (c *Client) RenameMe(ctx context.Context, newName string) (ClientRecord, error) {
+	body, err := json.Marshal(map[string]string{"name": newName})
+	if err != nil {
+		return ClientRecord{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/me/name", bytes.NewReader(body))
+	if err != nil {
+		return ClientRecord{}, err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return ClientRecord{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return ClientRecord{}, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var result struct {
+		ClientID    string `json:"client_id"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ClientRecord{}, err
+	}
+	return ClientRecord{ID: result.ClientID, Name: result.DisplayName}, nil
 }
 
 // UploadBlob sends raw content to POST /blobs and returns the blob metadata.
@@ -238,6 +268,36 @@ func (c *Client) DownloadBlob(ctx context.Context, id string) (content []byte, c
 		}
 	}
 	return content, contentType, filename, nil
+}
+
+// MeRecord holds the authenticated client's identity.
+type MeRecord struct {
+	ClientID    string `json:"client_id"`
+	DisplayName string `json:"display_name"`
+	TenantID    string `json:"tenant_id"`
+}
+
+// Me fetches the identity of the authenticated client from GET /me.
+func (c *Client) Me(ctx context.Context) (MeRecord, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/me", nil)
+	if err != nil {
+		return MeRecord{}, err
+	}
+	c.setHeaders(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return MeRecord{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return MeRecord{}, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var me MeRecord
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		return MeRecord{}, err
+	}
+	return me, nil
 }
 
 // Ping checks whether the server is reachable by calling GET /healthz.

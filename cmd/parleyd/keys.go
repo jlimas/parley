@@ -32,9 +32,9 @@ func cmdKeys(args []string) int {
 
 func keysHelp() {
 	fmt.Fprintf(os.Stderr, "usage: parleyd keys <create|list|revoke>\n\n")
-	fmt.Fprintf(os.Stderr, "  create --tenant <id> --agent <name>   mint a new API key (printed once)\n")
-	fmt.Fprintf(os.Stderr, "  list [--tenant <id>]                  show keys (all tenants if omitted)\n")
-	fmt.Fprintf(os.Stderr, "  revoke <id>                           revoke a key by ID\n\n")
+	fmt.Fprintf(os.Stderr, "  create --tenant <id> [--description \"...\"]   mint a new API key (printed once)\n")
+	fmt.Fprintf(os.Stderr, "  list [--tenant <id>]                           show keys (all tenants if omitted)\n")
+	fmt.Fprintf(os.Stderr, "  revoke <id>                                    revoke a key by ID\n\n")
 	fmt.Fprintf(os.Stderr, "The key store is read from PARLEY_DB (default: OS user config dir).\n")
 }
 
@@ -42,20 +42,15 @@ func cmdKeysCreate(args []string) int {
 	fs := flag.NewFlagSet("keys create", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	tenantID := fs.String("tenant", "", "tenant ID this key belongs to")
-	agent := fs.String("agent", "", "agent name this key authenticates as (e.g. \"alice\")")
+	description := fs.String("description", "", "admin note describing this key (e.g. \"Jorge's laptop\")")
 	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: parleyd keys create --tenant <id> --agent <name>")
+		fmt.Fprintln(os.Stderr, "usage: parleyd keys create --tenant <id> [--description \"...\"]")
 		return 2
 	}
 	if *tenantID == "" {
 		fmt.Fprintln(os.Stderr, "error: --tenant is required")
-		fmt.Fprintln(os.Stderr, "usage: parleyd keys create --tenant <id> --agent <name>")
+		fmt.Fprintln(os.Stderr, "usage: parleyd keys create --tenant <id> [--description \"...\"]")
 		fmt.Fprintln(os.Stderr, "hint:  run `parleyd tenants list` to find tenant IDs")
-		return 2
-	}
-	if *agent == "" {
-		fmt.Fprintln(os.Stderr, "error: --agent is required")
-		fmt.Fprintln(os.Stderr, "usage: parleyd keys create --tenant <id> --agent <name>")
 		return 2
 	}
 
@@ -77,7 +72,7 @@ func cmdKeysCreate(args []string) int {
 		return 1
 	}
 
-	plaintext, rec, err := db.CreateKey(*tenantID, *agent)
+	plaintext, rec, err := db.CreateKey(*tenantID, *description)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: create key: %v\n", err)
 		return 1
@@ -86,13 +81,18 @@ func cmdKeysCreate(args []string) int {
 	out := toon.New(os.Stdout)
 	out.KV("id", rec.ID)
 	out.KV("tenant_id", rec.TenantID)
-	out.KV("agent", rec.Agent)
+	out.KV("client_id", rec.ClientID)
+	out.KV("name", rec.DisplayName)
+	if rec.Description != "" {
+		out.KV("description", rec.Description)
+	}
 	out.KV("created_at", rec.CreatedAt.UTC().Format(time.RFC3339))
 	out.KV("key", plaintext)
 	out.KV("notice", "store this key now — it will not be shown again")
 	out.Help(
-		"Share the key out-of-band with the agent owner",
-		"The agent owner runs: parley config key <key>",
+		"Share the key out-of-band with the client owner",
+		"The client owner runs: parley config key <key>",
+		"The client can rename with: parley rename <name>",
 		"Run `parleyd keys list` to see all active keys",
 	)
 	return 0
@@ -113,6 +113,19 @@ func cmdKeysList(args []string) int {
 
 	out := toon.New(os.Stdout)
 
+	renderKeys := func(recs []store.KeyRecord) {
+		now := time.Now()
+		rows := make([][]any, len(recs))
+		for i, k := range recs {
+			revoked := "-"
+			if !k.RevokedAt.IsZero() {
+				revoked = humanAge(now, k.RevokedAt)
+			}
+			rows[i] = []any{k.ID, k.ClientID, k.DisplayName, k.Description, humanAge(now, k.CreatedAt), revoked}
+		}
+		out.Table("keys", []string{"id", "client_id", "name", "description", "created", "revoked"}, rows)
+	}
+
 	if *tenantID != "" {
 		recs, err := db.ListKeys(*tenantID)
 		if err != nil {
@@ -121,19 +134,10 @@ func cmdKeysList(args []string) int {
 		}
 		if len(recs) == 0 {
 			out.KV("keys", "none")
-			out.Help(fmt.Sprintf("Run `parleyd keys create --tenant %s --agent <name>` to mint a key", *tenantID))
+			out.Help(fmt.Sprintf("Run `parleyd keys create --tenant %s` to mint a key", *tenantID))
 			return 0
 		}
-		now := time.Now()
-		rows := make([][]any, len(recs))
-		for i, k := range recs {
-			revoked := "-"
-			if !k.RevokedAt.IsZero() {
-				revoked = humanAge(now, k.RevokedAt)
-			}
-			rows[i] = []any{k.ID, k.Agent, humanAge(now, k.CreatedAt), revoked}
-		}
-		out.Table("keys", []string{"id", "agent", "created", "revoked"}, rows)
+		renderKeys(recs)
 	} else {
 		recs, err := db.ListAllKeys()
 		if err != nil {
@@ -142,19 +146,10 @@ func cmdKeysList(args []string) int {
 		}
 		if len(recs) == 0 {
 			out.KV("keys", "none")
-			out.Help("Run `parleyd tenants create --name \"...\"` then `parleyd keys create --tenant <id> --agent <name>`")
+			out.Help("Run `parleyd tenants create --name \"...\"` then `parleyd keys create --tenant <id>`")
 			return 0
 		}
-		now := time.Now()
-		rows := make([][]any, len(recs))
-		for i, k := range recs {
-			revoked := "-"
-			if !k.RevokedAt.IsZero() {
-				revoked = humanAge(now, k.RevokedAt)
-			}
-			rows[i] = []any{k.ID, k.TenantID, k.Agent, humanAge(now, k.CreatedAt), revoked}
-		}
-		out.Table("keys", []string{"id", "tenant_id", "agent", "created", "revoked"}, rows)
+		renderKeys(recs)
 	}
 	out.Help("Run `parleyd keys revoke <id>` to revoke a key")
 	return 0
