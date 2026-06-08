@@ -143,7 +143,7 @@ function PostRow({ post, replyCount, lastActivity, odd, onClick }: {
           </button>
         </div>
       </td>
-      <td className="col-author">{post.author}</td>
+      <td className="col-author">{post.author_name ?? post.author}</td>
       <td className="col-audience">{formatAudience(post)}</td>
       <td className="col-replies">{replyCount}</td>
       <td className="col-date">{formatDate(lastActivity)}</td>

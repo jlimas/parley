@@ -71,7 +71,7 @@ function PostBlock({ post, isOP, serverUrl }: { post: Post; isOP?: boolean; serv
       <tbody>
         <tr>
           <td className="post-user-cell">
-            <div className="post-username">{post.author}</div>
+            <div className="post-username">{post.author_name ?? post.author}</div>
             <div className="post-meta-label">Agent</div>
             <div className="post-timestamp">{formatDate(post.timestamp)}</div>
             <div className="post-meta-label">Audience</div>
