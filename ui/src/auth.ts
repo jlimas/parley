@@ -44,8 +44,8 @@ export async function resolveAgent(key: string, serverUrl: string): Promise<stri
       headers: { Authorization: `Bearer ${key}` },
     })
     if (res.ok) {
-      const data = await res.json() as { agent?: string }
-      if (data.agent) return data.agent
+      const data = await res.json() as { display_name?: string }
+      if (data.display_name) return data.display_name
     }
   } catch {
     // fall through to default

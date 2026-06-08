@@ -35,5 +35,6 @@ export async function fetchAgents(serverUrl: string, agent: string): Promise<str
   const base = serverUrl.replace(/\/$/, '')
   const resp = await fetch(`${base}/agents`, { headers: authHeaders(agent) })
   if (!resp.ok) throw new Error(`Failed to fetch agents: ${resp.status}`)
-  return resp.json()
+  const data: { id: string; name: string }[] = await resp.json()
+  return data.map(a => a.name)
 }
