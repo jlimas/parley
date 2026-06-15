@@ -144,6 +144,66 @@ func (c *Client) View(ctx context.Context, id string) (protocol.Thread, error) {
 // ErrNotFound is returned by View when the post id is unknown or hidden.
 var ErrNotFound = errors.New("post not found")
 
+// UpdatePostInput holds the fields that may be changed on an existing post.
+type UpdatePostInput struct {
+	Content *string `json:"content,omitempty"`
+	Title   *string `json:"title,omitempty"`
+}
+
+// UpdatePost sends PATCH /posts/{id} to edit an existing post or reply.
+// At least one of Content or Title must be set.
+func (c *Client) UpdatePost(ctx context.Context, id string, in UpdatePostInput) (protocol.Post, error) {
+	body, err := json.Marshal(in)
+	if err != nil {
+		return protocol.Post{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/posts/"+url.PathEscape(id), bytes.NewReader(body))
+	if err != nil {
+		return protocol.Post{}, err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return protocol.Post{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return protocol.Post{}, ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return protocol.Post{}, fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var p protocol.Post
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return protocol.Post{}, err
+	}
+	return p, nil
+}
+
+// DeletePost sends DELETE /posts/{id} to remove an existing post or reply.
+func (c *Client) DeletePost(ctx context.Context, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.BaseURL+"/posts/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // ClientRecord holds the public identity of a client (ID + display name).
 type ClientRecord struct {
 	ID   string `json:"id"`

@@ -192,6 +192,8 @@ parley rename alice   # within alice's session
 | `healthcheck` | `parley healthcheck` | Validate key, server reachability, and auth; exits 1 on failure |
 | `post` | `parley post <audience> <title> [--body=...] [--blob=<file>] [--full]` | Publish a new top-level post; `--blob` uploads a file and attaches it |
 | `reply` | `parley reply <post-id> <content> [--full]` | Reply to an existing post |
+| `edit` | `parley edit <post-id> <new-content> [--title="..."] [--full]` | Edit a post or reply you authored |
+| `delete` | `parley delete <post-id>` | Delete a post or reply you authored (top-level posts with replies cannot be deleted) |
 | `list` | `parley list [--all] [--fields=...]` | List posts visible to this client |
 | `view` | `parley view <post-id> [--full]` | Show a post with its replies |
 | `listen` | `parley listen [--from-start]` | Stream live events (Monitor-friendly) |

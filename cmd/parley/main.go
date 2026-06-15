@@ -53,6 +53,8 @@ func dispatch(args []string) int {
 		"healthcheck": cmdHealthcheck,
 		"post":        cmdPost,
 		"reply":       cmdReply,
+		"edit":        cmdEdit,
+		"delete":      cmdDelete,
 		"list":        cmdList,
 		"view":        cmdView,
 		"listen":      cmdListen,
@@ -80,6 +82,8 @@ func printTopHelp() {
 		{"healthcheck", "Validate key, server, and auth"},
 		{"post", "Publish a new top-level post"},
 		{"reply", "Reply to an existing post"},
+		{"edit", "Edit a post or reply you authored"},
+		{"delete", "Delete a post or reply you authored"},
 		{"list", "List posts visible to this client"},
 		{"view", "Show a single post with replies"},
 		{"listen", "Stream events live (Monitor-friendly)"},
@@ -628,6 +632,132 @@ func replyHelp() {
 		examples: []string{
 			"parley reply 4274857 \"on it\"",
 			"parley reply 4274857 \"see attached\" --full",
+		},
+	})
+}
+
+// -- edit --
+
+func cmdEdit(args []string) int {
+	args = reorderFlags(args, "title")
+	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	title := fs.String("title", "", "new title (top-level posts only)")
+	full := fs.Bool("full", false, "show full content in the returned post body")
+	help := fs.Bool("help", false, "show help for this subcommand")
+	if err := fs.Parse(args); err != nil {
+		editHelp()
+		return 2
+	}
+	if *help {
+		editHelp()
+		return 0
+	}
+	rest := fs.Args()
+	if len(rest) != 2 && !(len(rest) == 1 && *title != "") {
+		return usageErr("usage: parley edit <post-id> <new-content> [--title=\"...\"]",
+			"Provide new content, a --title, or both")
+	}
+	id := rest[0]
+	newContent := ""
+	if len(rest) == 2 {
+		newContent = rest[1]
+	}
+	if newContent == "" && *title == "" {
+		return usageErr("at least one of content or --title must be provided",
+			"Example: parley edit 4274857 \"updated content\"")
+	}
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+	in := client.UpdatePostInput{}
+	if newContent != "" {
+		in.Content = &newContent
+	}
+	if *title != "" {
+		in.Title = title
+	}
+	post, err := c.UpdatePost(context.Background(), id, in)
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			out := toon.New(os.Stdout)
+			out.Error("post not found: "+id,
+				"Run `parley list --all` to see available posts")
+			return 1
+		}
+		return stdoutErr(err)
+	}
+	render.Detail(os.Stdout, post, nil, *full, time.Now())
+	return 0
+}
+
+func editHelp() {
+	renderSubcmdHelp(subcmdHelp{
+		name:        "edit",
+		usage:       "parley edit <post-id> <new-content> [--title=\"...\"] [--full]",
+		description: "Edit a post or reply you authored. Pass new content as the second argument. For top-level posts, use --title to change the headline. You must be the original author.",
+		flags: [][2]string{
+			{"--title", "new title (top-level posts only)"},
+			{"--full", "show complete content in the returned detail view"},
+		},
+		examples: []string{
+			"parley edit 4274857 \"corrected content\"",
+			"parley edit 4274857 \"updated body\" --title=\"New Title\"",
+			"parley edit 4274857 --title=\"Just renaming the thread\"",
+		},
+	})
+}
+
+// -- delete --
+
+func cmdDelete(args []string) int {
+	args = reorderFlags(args)
+	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	help := fs.Bool("help", false, "show help for this subcommand")
+	if err := fs.Parse(args); err != nil {
+		deleteHelp()
+		return 2
+	}
+	if *help {
+		deleteHelp()
+		return 0
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return usageErr("usage: parley delete <post-id>",
+			"Example: parley delete 4274857")
+	}
+	id := rest[0]
+	cfg, ok := mustIdentity()
+	if !ok {
+		return 1
+	}
+	c := newClient(cfg)
+	if err := c.DeletePost(context.Background(), id); err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			out := toon.New(os.Stdout)
+			out.Error("post not found: "+id,
+				"Run `parley list --all` to see available posts")
+			return 1
+		}
+		return stdoutErr(err)
+	}
+	out := toon.New(os.Stdout)
+	out.KV("deleted", id)
+	out.KV("status", "ok")
+	return 0
+}
+
+func deleteHelp() {
+	renderSubcmdHelp(subcmdHelp{
+		name:        "delete",
+		usage:       "parley delete <post-id>",
+		description: "Delete a post or reply you authored. Top-level posts with replies cannot be deleted — delete all replies first. You must be the original author.",
+		examples: []string{
+			"parley delete 4274857",
 		},
 	})
 }

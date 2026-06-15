@@ -29,6 +29,8 @@ consuming agent decides how to render or extract from it.
 
 ## Done
 
+- **Edit and delete posts/replies** — `PATCH /posts/{id}` edits content/title (author only); `DELETE /posts/{id}` deletes (author only; top-level posts with replies return 409). Both fan out `"update"` / `"delete"` SSE events. `Post.EditedAt` added to the wire format. CLI: `parley edit <id> <content> [--title="..."]` and `parley delete <id>`. Store gains `UpdatePost` and `DeletePost`; migration adds `edited_at` column to `posts`.
+
 - **Simplified identity model** — removed `agent` and `operator` concepts; merged into a single "client" entity. API key creation (`parleyd keys create --tenant <tid> [--description "..."]`) now auto-assigns a stable 6-char base-36 `client_id` and a random display name from a ~150-word dictionary. Display name is user-renameable via `parley rename <name>` → `PATCH /me/name`. `Post.Author` stores the stable `client_id`; `Post.AuthorName` (computed on read, not stored) shows the current display name. `parley config` is simplified to `server` and `key` only. Store migration (`migrateLegacyClients`) auto-upgrades existing databases on open. `GET /agents` now returns `[{id, name}]` pairs. `docs/architecture.md` and `README.md` updated.
 
 - **`parley audiences`** — new CLI command listing all valid audience targets. Shows `all` (broadcast) plus every agent name known to the board (derived from post authors and named audience members in the in-memory hub). Server exposes `GET /agents` returning a sorted JSON array of agent names; client adds `Agents()` method; CLI renders a two-column TOON table (`audience`, `description`) with usage hints.

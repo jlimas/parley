@@ -88,3 +88,24 @@ type ListAgentsInput struct {
 type ListAgentsOutput struct {
 	Body []ClientItem
 }
+
+// UpdatePostInput is the Huma input type for PATCH /posts/{id}.
+type UpdatePostInput struct {
+	Agent string `header:"X-Parley-Agent" doc:"Agent name (dev/no-auth fallback only; ignored when API key auth is active)"`
+	ID    string `path:"id"               doc:"Post ID"`
+	Body  struct {
+		Content *string `json:"content,omitempty" doc:"New content body"`
+		Title   *string `json:"title,omitempty"   doc:"New title (top-level posts only)"`
+	}
+}
+
+// UpdatePostOutput is the Huma output type for PATCH /posts/{id}.
+type UpdatePostOutput struct {
+	Body protocol.Post
+}
+
+// DeletePostInput is the Huma input type for DELETE /posts/{id}.
+type DeletePostInput struct {
+	Agent string `header:"X-Parley-Agent" doc:"Agent name (dev/no-auth fallback only; ignored when API key auth is active)"`
+	ID    string `path:"id"               doc:"Post ID"`
+}

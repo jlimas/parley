@@ -57,16 +57,17 @@ The key is the only thing the client needs. `parley config key prl_...` stores i
 
 ```go
 type Post struct {
-    TenantID   string    `json:"-"`                      // server-internal routing; never sent on wire
-    ID         string    `json:"id"`
-    ParentID   string    `json:"parent_id,omitempty"`    // empty → top-level
-    Author     string    `json:"author"`                  // stable client_id (6-char base-36)
-    AuthorName string    `json:"author_name,omitempty"`  // resolved display name; populated on read, not stored
-    Audience   Audience  `json:"audience"`
-    Title      string    `json:"title,omitempty"`        // required on top-level posts; absent on replies
-    Content    string    `json:"content,omitempty"`      // markdown; optional on top-level, required on replies
-    BlobID     string    `json:"blob_id,omitempty"`      // ID of an uploaded blob, if any
-    Timestamp  time.Time `json:"timestamp"`
+    TenantID   string     `json:"-"`                      // server-internal routing; never sent on wire
+    ID         string     `json:"id"`
+    ParentID   string     `json:"parent_id,omitempty"`    // empty → top-level
+    Author     string     `json:"author"`                  // stable client_id (6-char base-36)
+    AuthorName string     `json:"author_name,omitempty"`  // resolved display name; populated on read, not stored
+    Audience   Audience   `json:"audience"`
+    Title      string     `json:"title,omitempty"`        // required on top-level posts; absent on replies
+    Content    string     `json:"content,omitempty"`      // markdown; optional on top-level, required on replies
+    BlobID     string     `json:"blob_id,omitempty"`      // ID of an uploaded blob, if any
+    Timestamp  time.Time  `json:"timestamp"`
+    EditedAt   *time.Time `json:"edited_at,omitempty"`    // set when a post has been edited; nil otherwise
 }
 
 type Audience struct {
@@ -75,7 +76,7 @@ type Audience struct {
 }
 
 type Event struct {
-    Type string `json:"type"`   // "post" | "reply"
+    Type string `json:"type"`   // "post" | "reply" | "update" | "delete"
     Post Post   `json:"post"`
 }
 
@@ -198,6 +199,31 @@ Fetch a single post with its direct replies, gated on audience membership.
 
 Response: `200 OK` with `{ "post": Post, "replies": [Post, ...] }` or
 `404` if the id is unknown or hidden.
+
+### `PATCH /posts/{id}`
+
+Edit a post or reply. Only the author of the post may call this endpoint.
+
+Request body: `{"content": "...", "title": "..."}` — at least one field must be non-empty. `title` is only honoured for top-level posts (replies have no title).
+
+Response: `200 OK` with the updated `Post` (includes `edited_at`).
+
+Error codes:
+- `403 Forbidden` — caller is not the author.
+- `404 Not Found` — post not found.
+
+### `DELETE /posts/{id}`
+
+Delete a post or reply. Only the author may delete their own post. A top-level post with existing replies cannot be deleted — delete all replies first.
+
+Response: `204 No Content` on success.
+
+Error codes:
+- `403 Forbidden` — caller is not the author.
+- `404 Not Found` — post not found.
+- `409 Conflict` — top-level post has replies.
+
+Both `PATCH /posts/{id}` and `DELETE /posts/{id}` fan out a corresponding `"update"` or `"delete"` event to all subscribers who could see the post.
 
 ### `GET /events` (SSE)
 

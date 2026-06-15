@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS posts (
     blob_id    TEXT    NOT NULL DEFAULT '',
     blob_name  TEXT    NOT NULL DEFAULT '',
     timestamp  TEXT    NOT NULL,
-    seq        INTEGER NOT NULL
+    seq        INTEGER NOT NULL,
+    edited_at  TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS posts_seq ON posts(seq);
 CREATE INDEX IF NOT EXISTS posts_tenant ON posts(tenant_id);
@@ -152,6 +153,7 @@ func Open(dsn string) (*Store, error) {
 func applyMigrations(db *sql.DB, d dialect) error {
 	addCols := []struct{ table, col, def string }{
 		{"posts", "blob_name", "TEXT NOT NULL DEFAULT ''"},
+		{"posts", "edited_at", "TEXT NOT NULL DEFAULT ''"},
 		{"keys", "client_id", "TEXT NOT NULL DEFAULT ''"},
 		{"keys", "display_name", "TEXT NOT NULL DEFAULT ''"},
 		{"keys", "description", "TEXT NOT NULL DEFAULT ''"},
@@ -520,9 +522,9 @@ func (s *Store) Save(p protocol.Post) error {
 		return fmt.Errorf("marshal audience: %w", err)
 	}
 	q := s.d.rebind(
-		`INSERT INTO posts (id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp, seq)
+		`INSERT INTO posts (id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp, seq, edited_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		         (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts WHERE tenant_id = ?))`,
+		         (SELECT COALESCE(MAX(seq), 0) + 1 FROM posts WHERE tenant_id = ?), '')`,
 	)
 	_, err = s.db.Exec(q,
 		p.ID, p.TenantID, p.ParentID, p.Author, string(aud),
@@ -536,11 +538,43 @@ func (s *Store) Save(p protocol.Post) error {
 	return nil
 }
 
+// UpdatePost persists content and title changes for an existing post.
+// p.ID, p.TenantID, p.Author, and p.EditedAt must be set; ownership is
+// verified at the DB layer as a belt-and-suspenders check (the hub already
+// enforces it).
+func (s *Store) UpdatePost(p protocol.Post) error {
+	editedAt := ""
+	if p.EditedAt != nil {
+		editedAt = p.EditedAt.UTC().Format(time.RFC3339Nano)
+	}
+	q := s.d.rebind(`UPDATE posts SET content = ?, title = ?, edited_at = ? WHERE id = ? AND tenant_id = ? AND author = ?`)
+	res, err := s.db.Exec(q, p.Content, p.Title, editedAt, p.ID, p.TenantID, p.Author)
+	if err != nil {
+		return fmt.Errorf("update post %s: %w", p.ID, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("update post %s: not found or not owner", p.ID)
+	}
+	return nil
+}
+
+// DeletePost removes a post by ID within a tenant. Ownership and reply
+// constraints must be verified by the caller before invoking this method.
+func (s *Store) DeletePost(tenantID, id string) error {
+	q := s.d.rebind(`DELETE FROM posts WHERE id = ? AND tenant_id = ?`)
+	_, err := s.db.Exec(q, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete post %s: %w", id, err)
+	}
+	return nil
+}
+
 // LoadByTenant returns every stored post grouped by tenant_id, each tenant's
 // slice ordered by seq (publish order).
 func (s *Store) LoadByTenant() (map[string][]protocol.Post, error) {
 	rows, err := s.db.Query(
-		`SELECT id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp
+		`SELECT id, tenant_id, parent_id, author, audience, title, content, blob_id, blob_name, timestamp, edited_at
 		 FROM posts ORDER BY tenant_id, seq ASC`,
 	)
 	if err != nil {
@@ -551,11 +585,12 @@ func (s *Store) LoadByTenant() (map[string][]protocol.Post, error) {
 	out := make(map[string][]protocol.Post)
 	for rows.Next() {
 		var (
-			p      protocol.Post
-			audRaw string
-			ts     string
+			p        protocol.Post
+			audRaw   string
+			ts       string
+			editedAt string
 		)
-		if err := rows.Scan(&p.ID, &p.TenantID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &p.BlobID, &p.BlobName, &ts); err != nil {
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.ParentID, &p.Author, &audRaw, &p.Title, &p.Content, &p.BlobID, &p.BlobName, &ts, &editedAt); err != nil {
 			return nil, fmt.Errorf("scan post: %w", err)
 		}
 		if err := json.Unmarshal([]byte(audRaw), &p.Audience); err != nil {
@@ -566,6 +601,14 @@ func (s *Store) LoadByTenant() (map[string][]protocol.Post, error) {
 			return nil, fmt.Errorf("parse timestamp for %s: %w", p.ID, err)
 		}
 		p.Timestamp = parsed.UTC()
+		if editedAt != "" {
+			t, err := time.Parse(time.RFC3339Nano, editedAt)
+			if err != nil {
+				return nil, fmt.Errorf("parse edited_at for %s: %w", p.ID, err)
+			}
+			ut := t.UTC()
+			p.EditedAt = &ut
+		}
 		out[p.TenantID] = append(out[p.TenantID], p)
 	}
 	if err := rows.Err(); err != nil {

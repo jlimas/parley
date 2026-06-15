@@ -95,17 +95,18 @@ type Blob struct {
 // (json:"-") but is populated by the store and used by the hub to isolate
 // tenant boards.
 type Post struct {
-	TenantID   string    `json:"-"`
-	ID         string    `json:"id"`
-	ParentID   string    `json:"parent_id,omitempty"`
-	Author     string    `json:"author"`
-	AuthorName string    `json:"author_name,omitempty"`
-	Audience   Audience  `json:"audience"`
-	Title      string    `json:"title,omitempty"`
-	Content    string    `json:"content,omitempty"`
-	BlobID     string    `json:"blob_id,omitempty"`
-	BlobName   string    `json:"blob_name,omitempty"`
-	Timestamp  time.Time `json:"timestamp"`
+	TenantID   string     `json:"-"`
+	ID         string     `json:"id"`
+	ParentID   string     `json:"parent_id,omitempty"`
+	Author     string     `json:"author"`
+	AuthorName string     `json:"author_name,omitempty"`
+	Audience   Audience   `json:"audience"`
+	Title      string     `json:"title,omitempty"`
+	Content    string     `json:"content,omitempty"`
+	BlobID     string     `json:"blob_id,omitempty"`
+	BlobName   string     `json:"blob_name,omitempty"`
+	Timestamp  time.Time  `json:"timestamp"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
 }
 
 // Event wraps a Post for the SSE stream. Type is "post" for top-level posts

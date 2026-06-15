@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,7 +32,16 @@ type subscriber struct {
 // Persister is the durability hook the hub needs.
 type Persister interface {
 	Save(protocol.Post) error
+	UpdatePost(p protocol.Post) error
+	DeletePost(tenantID, id string) error
 }
+
+// Sentinel errors returned by Hub mutation methods.
+var (
+	ErrPostNotFound = errors.New("post not found")
+	ErrNotOwner     = errors.New("not the author of this post")
+	ErrHasReplies   = errors.New("cannot delete a post that has replies")
+)
 
 // KeyValidator checks whether a raw API key is active and non-revoked.
 // When nil, all requests are allowed through without authentication.
@@ -246,6 +256,106 @@ func (h *Hub) Thread(id, agent string) (protocol.Post, []protocol.Post, bool) {
 	return p, replies, true
 }
 
+// Update edits the content (and, for top-level posts, optionally the title)
+// of an existing post. Only the author of the post may update it.
+func (h *Hub) Update(id, agentID, newContent, newTitle string) (protocol.Post, error) {
+	h.mu.Lock()
+	p, ok := h.postsByID[id]
+	if !ok {
+		h.mu.Unlock()
+		return protocol.Post{}, ErrPostNotFound
+	}
+	if p.Author != agentID {
+		h.mu.Unlock()
+		return protocol.Post{}, ErrNotOwner
+	}
+	p.Content = newContent
+	if p.ParentID == "" && newTitle != "" {
+		p.Title = newTitle
+	}
+	now := time.Now().UTC()
+	p.EditedAt = &now
+	if err := h.persist.UpdatePost(p); err != nil {
+		h.mu.Unlock()
+		return protocol.Post{}, err
+	}
+	for i, existing := range h.posts {
+		if existing.ID == id {
+			h.posts[i] = p
+			break
+		}
+	}
+	h.postsByID[id] = p
+	evt := protocol.Event{Type: "update", Post: p}
+	subs := make([]*subscriber, 0, len(h.subscribers))
+	for s := range h.subscribers {
+		if p.Audience.Includes(s.agent) {
+			subs = append(subs, s)
+		}
+	}
+	h.mu.Unlock()
+	log.Printf("[update] id=%s author=%s", p.ID, p.Author)
+	for _, s := range subs {
+		select {
+		case s.ch <- evt:
+		default:
+			log.Printf("[drop] event=%s subscriber=%s reason=slow", evt.Post.ID, s.agent)
+		}
+	}
+	return p, nil
+}
+
+// Delete removes a post from the hub. Only the author may delete their own
+// post. Top-level posts with replies cannot be deleted.
+func (h *Hub) Delete(id, agentID string) (protocol.Post, error) {
+	h.mu.Lock()
+	p, ok := h.postsByID[id]
+	if !ok {
+		h.mu.Unlock()
+		return protocol.Post{}, ErrPostNotFound
+	}
+	if p.Author != agentID {
+		h.mu.Unlock()
+		return protocol.Post{}, ErrNotOwner
+	}
+	if p.ParentID == "" {
+		for _, r := range h.posts {
+			if r.ParentID == id {
+				h.mu.Unlock()
+				return protocol.Post{}, ErrHasReplies
+			}
+		}
+	}
+	if err := h.persist.DeletePost(h.tenantID, id); err != nil {
+		h.mu.Unlock()
+		return protocol.Post{}, err
+	}
+	delete(h.postsByID, id)
+	for i, existing := range h.posts {
+		if existing.ID == id {
+			h.posts = append(h.posts[:i], h.posts[i+1:]...)
+			break
+		}
+	}
+	evt := protocol.Event{Type: "delete", Post: p}
+	subs := make([]*subscriber, 0, len(h.subscribers))
+	for s := range h.subscribers {
+		if p.Audience.Includes(s.agent) {
+			subs = append(subs, s)
+		}
+	}
+	h.mu.Unlock()
+	log.Printf("[delete] id=%s author=%s", p.ID, p.Author)
+	for _, s := range subs {
+		select {
+		case s.ch <- evt:
+		default:
+			log.Printf("[drop] event=%s subscriber=%s reason=slow", evt.Post.ID, s.agent)
+		}
+	}
+	return p, nil
+}
+
 // KnownAgents returns the deduplicated, sorted list of agent names that have
 // appeared as authors or named audience members in any post in this hub.
 func (h *Hub) KnownAgents() []string {
@@ -439,6 +549,26 @@ func (s *Server) Handler() http.Handler {
 		Security:    security,
 	}, s.handleListAgents)
 
+	huma.Register(api, huma.Operation{
+		OperationID:   "update-post",
+		Method:        http.MethodPatch,
+		Path:          "/posts/{id}",
+		Summary:       "Edit a post or reply (author only)",
+		Tags:          []string{"posts"},
+		DefaultStatus: http.StatusOK,
+		Security:      security,
+	}, s.handleUpdatePost)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "delete-post",
+		Method:        http.MethodDelete,
+		Path:          "/posts/{id}",
+		Summary:       "Delete a post or reply (author only; top-level posts with replies cannot be deleted)",
+		Tags:          []string{"posts"},
+		DefaultStatus: http.StatusNoContent,
+		Security:      security,
+	}, s.handleDeletePost)
+
 	var h http.Handler = mux
 	if s.keyValidator != nil {
 		h = s.authMiddleware(h)
@@ -450,7 +580,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, X-Parley-Key, Content-Type, X-Parley-Agent")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -632,6 +762,61 @@ func (s *Server) handleCreatePost(ctx context.Context, input *CreatePostInput) (
 		return nil, huma.Error500InternalServerError("persist: " + err.Error())
 	}
 	return &CreatePostOutput{Body: stored}, nil
+}
+
+func (s *Server) handleUpdatePost(ctx context.Context, input *UpdatePostInput) (*UpdatePostOutput, error) {
+	agent := resolveAgent(ctx, input.Agent)
+	if agent == "" {
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
+	}
+	tenantID := tenantFromCtx(ctx)
+
+	newContent := ""
+	newTitle := ""
+	if input.Body.Content != nil {
+		newContent = *input.Body.Content
+	}
+	if input.Body.Title != nil {
+		newTitle = *input.Body.Title
+	}
+	if newContent == "" && newTitle == "" {
+		return nil, huma.Error400BadRequest("at least one of content or title must be provided")
+	}
+
+	updated, err := s.hubFor(tenantID).Update(input.ID, agent, newContent, newTitle)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrPostNotFound):
+			return nil, huma.Error404NotFound("post not found")
+		case errors.Is(err, ErrNotOwner):
+			return nil, huma.Error403Forbidden("only the author may edit this post")
+		}
+		log.Printf("parleyd: update post: %v", err)
+		return nil, huma.Error500InternalServerError("update: " + err.Error())
+	}
+	return &UpdatePostOutput{Body: updated}, nil
+}
+
+func (s *Server) handleDeletePost(ctx context.Context, input *DeletePostInput) (*struct{}, error) {
+	agent := resolveAgent(ctx, input.Agent)
+	if agent == "" {
+		return nil, huma.Error400BadRequest("client identity required: authenticate with a valid API key")
+	}
+	tenantID := tenantFromCtx(ctx)
+
+	if _, err := s.hubFor(tenantID).Delete(input.ID, agent); err != nil {
+		switch {
+		case errors.Is(err, ErrPostNotFound):
+			return nil, huma.Error404NotFound("post not found")
+		case errors.Is(err, ErrNotOwner):
+			return nil, huma.Error403Forbidden("only the author may delete this post")
+		case errors.Is(err, ErrHasReplies):
+			return nil, huma.Error409Conflict("cannot delete a post that has replies")
+		}
+		log.Printf("parleyd: delete post: %v", err)
+		return nil, huma.Error500InternalServerError("delete: " + err.Error())
+	}
+	return nil, nil
 }
 
 func (s *Server) handleListPosts(ctx context.Context, input *ListPostsInput) (*ListPostsOutput, error) {

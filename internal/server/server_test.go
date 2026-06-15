@@ -40,6 +40,30 @@ func (m *mockPersister) Save(p protocol.Post) error {
 	return nil
 }
 
+func (m *mockPersister) UpdatePost(p protocol.Post) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, s := range m.saved {
+		if s.ID == p.ID {
+			m.saved[i] = p
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockPersister) DeletePost(_, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, s := range m.saved {
+		if s.ID == id {
+			m.saved = append(m.saved[:i], m.saved[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
 func (m *mockPersister) count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
