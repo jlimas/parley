@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { fetchThread, type Post } from '../api'
 import { authHeaders } from '../auth'
 import { formatDate } from '../utils'
@@ -82,7 +84,9 @@ function PostBlock({ post, isOP, serverUrl }: { post: Post; isOP?: boolean; serv
               <div className="post-title">{post.title}</div>
             )}
             <div className="post-body">
-              {post.content ?? <em>(no content)</em>}
+              {post.content
+                ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{post.content}</ReactMarkdown>
+                : <em>(no content)</em>}
             </div>
             {post.blob_id && (
               <button className="post-blob" onClick={() => downloadBlob(serverUrl, post.blob_id!)}>
