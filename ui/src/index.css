@@ -142,6 +142,7 @@ body {
   width: 100%;
   border-collapse: collapse;
   border-top: 1px solid #c0ccd8;
+  table-layout: fixed;
 }
 .post-table.post-op { border-top: none; }
 .post-table + .post-table { border-top: 2px solid #8a9aaa; }
